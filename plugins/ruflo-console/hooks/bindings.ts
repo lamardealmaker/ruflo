@@ -4,11 +4,28 @@
  */
 import { claimTask, handoffClaim, releaseClaim, stealClaim, whyNot } from './actions'
 import { EVENT_KINDS } from './data/events'
+import { evolveActions } from './evolve'
+import { askActions } from './ask-claude'
+import { loopActions } from './loops'
+import { optimizerActions } from './optimizer'
+import { watchActions } from './watch'
+import { missionActions } from './mission-control'
+import { catalogActions } from './plugin-catalog'
+import { saveAllowed } from './remember'
+import { pluginNames, settingsActions } from './settings'
+import { catalogOf } from './plugin-catalog'
+import { devtoolsActions } from './devtools'
+import { HARNESSES, harnessSpec, isAutoAccept, isLive, newSession, send, whyNotRun } from './harness'
+import { startSpec } from './starts'
 import { plain } from './data/parse'
 import type { Host } from './host'
+import { memoryActions } from './memory-lab'
 import { filterPalette, paletteEntries } from './palette'
 import type { Runner } from './runner'
-import type { State } from './state'
+import { skillActions } from './skills'
+import { moreSkillActions } from './skills-lab'
+import { CLI_PREFIXES, NAV_KEY, PANE_ID, viewOf, type State } from './state'
+import { vectorActions } from './vector'
 import type { Actions } from './views/common'
 import { openTasks, selection } from './views/select'
 
@@ -22,6 +39,15 @@ export type Steps = {
 
 export function actionsOf(state: State, host: Host, runner: Runner, steps: Steps): Actions {
   const { freshRead, probe, setView, drill, close } = steps
+
+  /**
+   * After a command typed in the terminal field (/ruflo, /new, /up…) the rows above the field change, and the engine
+   * does not keep the focus ring on it: the next keys would fire hotkeys or leave the pane. Put the ring back.
+   */
+  const keepField = () => {
+    // After the redraw: from inside the submit's own dispatch the ring is moved before the new rows land.
+    host.after(80, () => void host.focus(PANE_ID, 'term-input').catch(() => undefined))
+  }
 
   /** j/k: what moves depends on the view in front. */
   function select(by: number): void {
@@ -39,13 +65,53 @@ export function actionsOf(state: State, host: Host, runner: Runner, steps: Steps
 
   const actions: Actions = {
     view: setView,
-    refresh: () => void freshRead().then(() => probe(true)),
+    remember: () => {
+      const key = state.pending?.rememberKey
+
+      if (key !== undefined && state.pending !== null) {
+        state.allowed.set(key, state.pending.label)
+        saveAllowed(state, host)
+      }
+
+      void runner.confirm()
+    },
+    forget: key => {
+      if (key === '') state.allowed.clear()
+      else state.allowed.delete(key)
+      saveAllowed(state, host)
+      host.invalidate()
+    },
+    nav: style => {
+      state.nav = style
+      void host.storeSet(NAV_KEY, style).catch(() => undefined)
+      host.invalidate()
+    },
+    editField: (key, text) => {
+      state.fieldText.set(key, text)
+      host.invalidate()
+      host.after(60, () => void host.focus(PANE_ID, key).catch(() => undefined))
+    },
+    clearField: key => {
+      state.fieldText.set(key, '')
+      host.invalidate()
+    },
+    toggle: key => {
+      if (state.sections.has(key)) state.sections.delete(key)
+      else state.sections.add(key)
+      host.invalidate()
+    },
+    refresh: () => {
+      void freshRead().then(() => probe(true))
+      // The skills lists come from `npx skills`, not the disk read: r asks for them again on that view.
+      if (state.view === 'skills') actions.skills.list()
+      if (state.view === 'evolve') actions.evolve.reread()
+    },
     help: () => {
       state.isHelp = !state.isHelp
       host.invalidate()
     },
     close: () => void close(),
-    back: () => setView(state.view === 'agent' ? state.back : 'overview'),
+    back: () => setView(state.view === 'agent' ? state.back : state.options.look === 'bbs' ? 'menu' : 'overview'),
     confirm: () => void runner.confirm(),
     cancel: runner.cancel,
     select,
@@ -103,6 +169,9 @@ export function actionsOf(state: State, host: Host, runner: Runner, steps: Steps
       if (best !== undefined) runner.runEntry(best, best.run.kind === 'text' ? state.palette.query.trim().slice(best.run.keyword.length).trim() : '')
     },
     run: (id, text = '') => runner.runById(id, text),
+    costBudgetDraft: text => {
+      state.costBudgetDraft = text.slice(0, 40)
+    },
     filter: () => {
       const order = ['all', ...EVENT_KINDS] as const
       const at = order.indexOf(state.eventFilter)
@@ -110,6 +179,161 @@ export function actionsOf(state: State, host: Host, runner: Runner, steps: Steps
       state.eventFilter = order[(at + 1) % order.length] ?? 'all'
       host.invalidate()
     },
+    focus: key => void host.focus(PANE_ID, key).catch(() => undefined),
+    start: (id, text = '') => runner.ask(startSpec(id, Date.now(), text), id === 'mission' || id === 'task' ? 'type it first (it may not start with -)' : 'that start cannot run here'),
+    // The main menu's prompt, as a board's: a key (2, w, i), a name (swarm, x.ruv.io), ? for help, O to log off.
+    menu: text => {
+      const word = text.trim().toLowerCase()
+      const view = viewOf(word)
+
+      if (word === '') return
+      if (word === '?' || word === 'h' || word === 'help') actions.help()
+      else if (word === 'p') actions.palette('all')
+      else if (word === 'r') actions.refresh()
+      else if (word === 'o' || word === 'bye' || word === 'logoff') actions.close()
+      else if (view !== null) setView(view)
+      else runner.ask(null, `no area "${plain(word, 24)}": type a key from the menu, or ? for help`)
+    },
+    term: {
+      harness: id => {
+        state.terminal.harness = id
+        host.invalidate()
+        // Pressing the pick moved the focus ring onto its button: give the field the keys back.
+        if (state.pane.isFocused) void host.focus(PANE_ID, 'term-input').catch(() => undefined)
+      },
+      draft: text => {
+        state.terminal.draft = text
+      },
+      // In a live session Enter sends, as in a chat. Otherwise Enter asks: the confirm row shows the exact command,
+      // and Enter again on the same text runs it (the field keeps the keys throughout; y and n work too).
+      // `/new` in the field starts a fresh session.
+      submit: text => {
+        const key = `${state.terminal.harness}\u0000${text.trim()}`
+        const asked = state.terminal.asked
+
+        if (text.trim() === '/new') {
+          state.terminal.draft = ''
+          newSession(state, host)
+          keepField()
+
+          return
+        }
+
+        // /up /down /end scroll the conversation from the field (it holds the keys, so PgUp would only type).
+        const move = { '/up': 12, '/down': -12, '/end': -state.terminal.scroll }[text.trim()]
+
+        if (move !== undefined) {
+          state.terminal.draft = ''
+          actions.term.scroll(move)
+          keepField()
+
+          return
+        }
+
+        // /codex /claude /swarm /ruflo switch harness from the field, which holds the keys (its hotkeys would type).
+        const pick = HARNESSES.find(entry => text.trim() === `/${entry.id}`)
+
+        if (pick !== undefined) {
+          state.terminal.draft = ''
+          state.terminal.harness = pick.id
+          // An ask the previous harness left on screen goes with it.
+          if (state.terminal.asked !== null && state.pending?.label === state.terminal.asked.label) runner.cancel()
+          state.terminal.asked = null
+          host.invalidate()
+          keepField()
+
+          return
+        }
+
+        if (isLive(state) || isAutoAccept(state)) {
+          const why = whyNotRun(state, text)
+
+          if (why !== null) {
+            runner.ask(null, why)
+
+            return
+          }
+
+          state.terminal.draft = ''
+          send(state, host, text)
+
+          return
+        }
+
+        // The engine may empty the field on submit, so an empty Enter on a pending ask confirms it too.
+        if (asked !== null && (asked.key === key || text.trim() === '') && state.pending?.label === asked.label) {
+          state.terminal.asked = null
+          state.terminal.draft = ''
+          void runner.confirm()
+
+          return
+        }
+
+        const spec = harnessSpec(state, host, text)
+
+        // The text is in the pending ask (an empty Enter or Yes runs it): the field clears, unless it cannot be sent and stays to be fixed.
+        state.terminal.draft = spec !== null ? '' : text
+        runner.ask(spec, whyNotRun(state, text) ?? 'nothing to run')
+        state.terminal.asked = spec !== null ? { key, label: spec.label } : null
+      },
+      stop: () => {
+        for (const run of state.terminal.runs.values()) run.stop()
+      },
+      fresh: () => newSession(state, host),
+      clear: () => {
+        state.terminal.lines = []
+        state.terminal.scroll = 0
+        state.terminal.unseen = 0
+        host.invalidate()
+      },
+      scroll: by => {
+        state.terminal.scroll = Math.max(0, state.terminal.scroll + by)
+        if (state.terminal.scroll === 0) state.terminal.unseen = 0
+        host.invalidate()
+      },
+      // A click on an earlier question puts it back in the field, ready to edit or send again.
+      reuse: text => {
+        state.terminal.draft = text
+        host.invalidate()
+        if (state.pane.isFocused) void host.focus(PANE_ID, 'term-input').catch(() => undefined)
+      },
+      // A menu entry elsewhere (x.ruv.io) opens the terminal with its command typed, not run: Enter twice runs it.
+      load: (id, text) => {
+        state.terminal.harness = id
+        state.terminal.draft = text
+        setView('terminal')
+      },
+      // An ask link is the person's ask: it goes to the agent now, no Enter to confirm it. Busy or empty, it waits in the field instead.
+      ask: (id, text) => {
+        state.terminal.harness = id
+        setView('terminal')
+
+        if (whyNotRun(state, text) !== null) {
+          state.terminal.draft = text
+          host.invalidate()
+
+          return
+        }
+
+        state.terminal.draft = ''
+        send(state, host, text)
+        host.invalidate()
+      },
+    },
+    // ▸ edit hands the skill to the AI terminal, as x.ruv.io's ▸ open does: typed, not run.
+    skills: { ...skillActions(state, host, runner, text => actions.term.load('claude', text)), ...moreSkillActions(state, host, runner, text => actions.term.load('claude', text)) },
+    memory: memoryActions(state, runner, host.invalidate),
+    // An rvlite query is MCP-only: it goes to the AI terminal typed, as ▸ edit does, and runs only when sent.
+    vector: vectorActions(state, runner, text => actions.term.load('claude', text)),
+    evolve: evolveActions(state, host, text => actions.term.ask('claude', text)),
+    settings: settingsActions(state, host, runner, (agent, text) => actions.term.ask(agent, text), () => CLI_PREFIXES[state.options.cli], () => pluginNames(state, (catalogOf(state).plugins ?? []).filter(plugin => plugin.options.length > 0).map(plugin => plugin.name))),
+    mission: missionActions(state, host, runner),
+    ask: askActions(state, host, runner, () => actions),
+    loops: loopActions(state, host, runner),
+    optimizer: optimizerActions(state, () => host.invalidate(), id => void runner.runById(id, ''), question => actions.ask.ask(question, 'overview')),
+    watch: watchActions(state, () => host.invalidate(), (question, view) => actions.ask.ask(question, view)),
+    catalog: catalogActions(state, host, runner, text => actions.term.load('claude', text)),
+    devtools: devtoolsActions(state, host, runner.runById, why => runner.ask(null, why)),
   }
 
   return actions

@@ -465,7 +465,8 @@ const handlers = {
     for (const d of dangerous) {
       if (cmd.includes(d)) {
         console.error(`[BLOCKED] Dangerous command detected: ${d}`);
-        process.exit(1);
+        // Claude Code PreToolUse: exit 2 blocks execution; exit 1 is non-blocking.
+        process.exit(2);
       }
     }
     console.log('[OK] Command validated');
@@ -598,8 +599,8 @@ const handlers = {
   }
 }
 
-// Hooks must ALWAYS exit 0 — Claude Code treats non-zero as "hook error"
-// and skips all subsequent hooks for the event.
+// Non-blocking hooks exit 0; pre-bash denials exit 2 to block PreToolUse.
+// A denial exits immediately, before the normal completion path below.
 //
 // Only dispatch when run directly (node hook-handler.cjs <cmd>). When
 // require()'d by a test, expose the internals instead of reading stdin and

@@ -29,11 +29,13 @@ import {
   parseAgents,
   parseClaims,
   parseHive,
+  parseHiveAgents,
   parseSwarmPointer,
   parseSwarmStore,
   parseTasks,
   type AgentRecord,
   type ClaimRecord,
+  type HiveAgentRecord,
   type HiveInfo,
   type SwarmInfo,
   type TaskRecord,
@@ -60,6 +62,8 @@ export type Snapshot = {
   tasks: TaskRecord[]
   claims: ClaimRecord[]
   hive: HiveInfo | null
+  /** Workers `hive-mind spawn` wrote to .claude-flow/agents.json, apart from the agent store. */
+  hiveAgents: HiveAgentRecord[]
   activity: ReturnType<typeof parseActivity>
   daemon: Daemon | null
   neural: NeuralStats | null
@@ -102,6 +106,7 @@ export async function readSnapshot(fs: ReaderFs, cache: ReadCache, cwd: string, 
     tasks: parseTasks(text('tasks')),
     claims: parseClaims(text('claims')),
     hive: parseHive(text('hive')),
+    hiveAgents: parseHiveAgents(text('hiveAgents')),
     activity: parseActivity(text('activity')),
     daemon: parseDaemon(text('daemon')),
     neural: parseNeural(text('neural')),

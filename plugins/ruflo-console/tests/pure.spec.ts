@@ -25,6 +25,11 @@ const memoryFs = (files: Record<string, string>) => ({
 })
 
 describe('readers', () => {
+  it('plain() drops whole ANSI colour sequences, not just the ESC byte', () => {
+    expect(plain('\u001b[1mLogs for agent-1\u001b[0m')).toBe('Logs for agent-1')
+    expect(plain('\u001b[2m11:24:13 AM\u001b[0m [INFO] created')).toBe('11:24:13 AM [INFO] created')
+  })
+
   it('read the captured run: one swarm, two agents, two claims (one stealable), a queen and a proposal, no token', () => {
     expect(parseSwarmStore(at('.claude-flow/swarm/swarm-state.json'))).toMatchObject({ id: 'swarm-1790903031804-y9rnjr', topology: 'hierarchical', status: 'running', strategy: 'specialized', maxAgents: 6 })
     expect(parseAgents(at('.claude-flow/agents/store.json')).map(agent => `${agent.type}:${agent.status}`)).toEqual(['coder:idle', 'tester:idle'])
@@ -53,7 +58,7 @@ describe('readers', () => {
   })
 
   it('plain strips control and bidi characters; idOf admits only id-shaped strings', () => {
-    expect(plain('a\u001b[31m‮b\u0000c')).toBe('a [31m b c')
+    expect(plain('a\u001b[31m‮b\u0000c')).toBe('a b c')
     expect(plain('x'.repeat(50), 10)).toHaveLength(10)
     expect(idOf('agent-1790903032181-97m25s')).toBe('agent-1790903032181-97m25s')
     for (const bad of ['bad id!', '-rf', '', 'a'.repeat(200), '../etc', 42]) expect(idOf(bad)).toBeNull()
@@ -111,8 +116,8 @@ describe('CLI JSON', () => {
     expect(jsonAfter('no json here')).toBeNull()
   })
 
-  it('no probe reaches the network but the opt-in roster; plugins list and verify are never run', () => {
-    expect(PROBES.filter(probe => probe.isNetwork === true).map(probe => probe.id)).toEqual(['roster'])
+  it('no probe reaches the network but the opt-in roster and registry; plugins list and verify are never run', () => {
+    expect(PROBES.filter(probe => probe.isNetwork === true).map(probe => probe.id)).toEqual(['roster', 'registry'])
 
     for (const probe of PROBES) {
       expect(probe.args.slice(0, 2).join(' ')).not.toBe('plugins list')
@@ -141,9 +146,12 @@ describe('graphics', () => {
     const state = newState({})
 
     state.view = 'learning'
-    expect([...picturesOf(state, 90, 0, 5).keys()]).toEqual(['header', 'curve', 'pipeline', 'patterns'])
+    expect([...picturesOf(state, 90, 0, 5).keys()]).toEqual(['title', 'curve', 'pipeline', 'patterns'])
     state.view = 'memory'
-    expect([...picturesOf(state, 90, 0, 5).keys()]).toEqual(['header'])
+    expect([...picturesOf(state, 90, 0, 5).keys()]).toEqual(['title'])
+    // The RUFLO banner is the main menu's alone; every other page leads with `RUFLO | PAGE`.
+    state.view = 'menu'
+    expect([...picturesOf(state, 90, 0, 5).keys()]).toEqual(['header', 'title'])
   })
 
   it('the budget ladder marks 50/75/90/100% and fills to the spend', () => {

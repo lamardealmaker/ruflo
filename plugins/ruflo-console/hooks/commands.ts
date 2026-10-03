@@ -48,6 +48,14 @@ export function parseRuflo(args: string): Intent {
     case 'palette':
     case 'p':
       return { kind: 'palette', query: rest }
+    // `/ruflo plan <goal>` prints the SPARC plan; `/ruflo mission [status|next|pause|resume|cancel|create|guide <text>|aside <text>|auto on|off]`.
+    // `/ruflo ask <question>`: ask the main Claude about the open section (asks first).
+    case 'ask':
+      return { kind: 'run', paletteId: 'ask', text: rest }
+    case 'plan':
+      return { kind: 'run', paletteId: 'mission-goal', text: rest }
+    case 'mission':
+      return { kind: 'run', paletteId: `mission-${second === '' ? 'status' : second.replace(/[^a-z-]/g, '')}`, text: rest.slice(second.length).trim() }
     case 'run':
     case 'act':
       return second === '' ? { kind: 'palette', query: '' } : { kind: 'run', paletteId: second, text: rest.slice(second.length).trim() }
@@ -88,7 +96,7 @@ export const HELP = [
   '',
   'Open and switch',
   `  /ruflo                     open the cockpit (also opens by itself where it can dock, panel=auto)`,
-  `  /ruflo <view>              ${VIEWS.map(view => `${view.id} (${view.key})`).join(', ')}`,
+  `  /ruflo <view>              ${VIEWS.map(view => (view.key === '' ? view.id : `${view.id} (${view.key})`)).join(', ')}`,
   '  /ruflo agent <id|name>     drill into one agent: role, task, claims, activity, logs, timeline',
   '  /ruflo back | close | status',
   '  /ruflo dump <view>         a view as plain text, without the pane (for claude -p and scripts)',
@@ -105,7 +113,8 @@ export const HELP = [
   '  /ruflo swarm pane|status|topology|claims|consensus   ruflo-swarm (was /ruflo-swarm-*)',
   '',
   'Pane keys (while it holds the keyboard: /ruflo opens it with the keys, or click it; ctrl+x tab reaches the band, not the pane)',
-  '  1-9 views · g timeline · q approvals · e events · m missions · p palette · x actions for the selection',
+  '  0 main menu · 1-9 views · g timeline · q approvals · e events · m missions · w x.ruv.io · i terminal · p palette · x actions for the selection',
+  '  terminal: the field takes the keys; /codex /claude /swarm /ruflo switch harness, /new starts over · sessions remember the conversation per project; the first message asks, then Enter sends · Tab to s stop, o new, z clear',
   '  j/k select · d drill in · b back · r refresh · h help · f event filter · y/n confirm',
   '  Esc: a pane /ruflo opened closes; one that opened by itself (panel=auto) only hands the keys back. ✕ or /ruflo close closes either',
   '  (? and Enter cannot be pane hotkeys in this Claude Code build: use h, and d to drill in)',

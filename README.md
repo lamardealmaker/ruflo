@@ -50,7 +50,20 @@ User --> Ruflo (CLI/MCP) --> Router --> Swarm --> Agents --> Memory --> LLM Prov
 
 ---
 
-![Ruflo Plugins](./ruflo-plugins.gif)
+![The ruflo console inside Claude Code: swarm topology, claims, approvals, missions, events and more](docs/assets/ruflo-console-tour.gif)
+
+<sub>The <code>/ruflo</code> console running in Claude Code (Claude on the left third, the cockpit on the right two thirds; drag the divider to resize): agents spawned and tasks created from the prompt show up live in the swarm, claims and memory views. <code>npx ruflo init</code>, restart Claude Code, then <code>/ruflo</code>.</sub>
+
+**Install the mods from the ruflo marketplace** (Claude Code 2.1.287 or later; mods run with your account's permissions and are not sandboxed, so read the code first):
+
+```text
+/plugin marketplace add ruvnet/ruflo
+/plugin install ruflo-console@ruflo
+/plugin install ruflo-mods@ruflo
+/reload-plugins
+```
+
+`ruflo-console` is the cockpit above, `ruflo-mods` routes prompts and enforces policy in-process, `ruflo-swarm` shows the swarm in a pane, and `ruflo-ruos` adds the ruOS status segment. Open `/plugin` to confirm they appear in the active mods line. Inside the console, `/ruflo market` is the Plugin Catalog: every ruflo plugin, mod and skill with what it ships, and buttons to install, enable, disable and update (each asks first).
 
 ## Quick Start
 

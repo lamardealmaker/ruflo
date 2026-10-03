@@ -80,6 +80,23 @@ export function diffEvents(prev: Snapshot | null, next: Snapshot, atMs: number):
     if (!decided.has(decision.id)) out.push(ev(atMs, 'swarm', `proposal ${decision.type} decided: ${decision.result} (${decision.votesFor}/${decision.votesAgainst})`, next.hive?.queen))
   }
 
+  // Each ballot new since the last read, tagged with its voter: the hive's honeycomb pulses that worker's cell.
+  const ballotsBefore = new Map(prev.hive?.pending.map(entry => [entry.id, new Set(entry.ballots.map(ballot => ballot.voter))]) ?? [])
+
+  for (const proposal of next.hive?.pending ?? []) {
+    const seen = ballotsBefore.get(proposal.id) ?? new Set<string>()
+
+    for (const ballot of proposal.ballots) {
+      if (!seen.has(ballot.voter)) out.push(ev(atMs, 'swarm', `${ballot.voter} voted ${ballot.isFor ? 'for' : 'against'} ${proposal.type} (${proposal.id})`, ballot.voter))
+    }
+  }
+
+  const workersBefore = new Set(prev.hive?.workers ?? [])
+  const workersAfter = new Set(next.hive?.workers ?? [])
+
+  for (const worker of workersAfter) if (!workersBefore.has(worker)) out.push(ev(atMs, 'swarm', `${worker} joined the hive`, worker))
+  for (const worker of workersBefore) if (!workersAfter.has(worker)) out.push(ev(atMs, 'swarm', `${worker} left the hive`, worker))
+
   const patterns = (next.neural?.patterns ?? 0) - (prev.neural?.patterns ?? 0)
 
   if (prev.neural !== null && next.neural !== null && patterns > 0) out.push(ev(atMs, 'learning', `+${patterns} pattern${patterns === 1 ? '' : 's'} learned`))

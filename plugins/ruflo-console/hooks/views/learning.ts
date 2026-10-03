@@ -1,8 +1,52 @@
 import type { RenderElement } from 'claude-code'
 
 import type { Intelligence } from '../data/cli'
-import { ago, col, count, kv, live, pct, picture, rule, sourceLine, text, THEME, type Ctx } from './common'
+import { ago, col, count, kv, live, pct, picture, row, rule, section, sourceLine, starts, text, THEME, type Ctx } from './common'
 import { stagesOf } from './frames'
+import { settingsOf } from '../settings'
+import { resultRows } from './automate'
+import { pulseRows } from './learning-pulse'
+import { neuralActionRows } from './neural'
+
+/** The two switches that decide whether ruflo learns at all, folded away: each is a confirm-gated `ruflo config set`. */
+function configRows(ctx: Ctx): RenderElement[] {
+  const core = settingsOf(ctx.state).core
+  const keys = [
+    { key: 'neural.enabled', title: 'Neural learning', help: 'SONA / MoE pattern learning' },
+    { key: 'hooks.enabled', title: 'Hooks', help: 'hooks that learn from your edits and routes' },
+  ]
+
+  return section(
+    ctx,
+    'learn-config',
+    'Settings & configuration',
+    'what lets ruflo learn · each change asks first',
+    [
+      ...keys.map(item => {
+        const value = core?.get(item.key)
+
+        return row(
+          ctx,
+          [
+            ctx.kit.Text({ bold: true, color: THEME.head, children: ` ${item.title.padEnd(16)}` }),
+            ctx.kit.Text({ color: value === 'true' ? THEME.ok : value === 'false' ? THEME.bad : THEME.info, children: ` ${value === undefined ? 'n/a (open Settings to read it)' : value === 'true' ? 'on' : 'off'} ` }),
+            ctx.kit.Button({ key: `learn-cfg-on-${item.key}`, label: ' ● on ', plain: true, onPress: () => ctx.act.settings.core(item.key, 'true') }),
+            ctx.kit.Button({ key: `learn-cfg-off-${item.key}`, label: ' ○ off ', plain: true, onPress: () => ctx.act.settings.core(item.key, 'false') }),
+            ctx.kit.Text({ dimColor: true, wrap: 'truncate-end', children: ` ${item.help}` }),
+          ],
+          `learn-cfg-${item.key}`,
+        )
+      }),
+      text(ctx, ' every other setting is in Settings (s): the router, memory and swarm keys, the AI preferences', { dimColor: true }),
+    ],
+    false,
+  )
+}
+
+/** The Learning Lab's actions on this page, folded: what was learned, training, pretrain, consolidate, the pattern store, the router. */
+function actionRows(ctx: Ctx): RenderElement[] {
+  return section(ctx, 'learn-actions', 'Self-learning actions', 'train, pretrain, consolidate, teach a pattern, route: the answer opens under the button', neuralActionRows(ctx), false)
+}
 
 /**
  * What ruflo has learned, from its own stores: the router's last pick and how routed tasks turned out, the model tier
@@ -72,5 +116,8 @@ export function learningView(ctx: Ctx): RenderElement {
   )
   rows.push(text(ctx, 'live engine: hooks_intelligence_stats in a fresh CLI process, so in-memory counters start at zero there', { dimColor: true }))
 
-  return col(ctx, rows, 'learning')
+  // Nothing learned yet: the loop starts from the repository itself.
+  if ((snap?.sona === null || snap?.sona === undefined) && (neural === null || neural === undefined) && snap?.isRufloProject === true) rows.push(starts(ctx, 'Nothing learned yet in this project.', ['pretrain']))
+
+  return col(ctx, [...resultRows(ctx, ['nn-']), ...pulseRows(ctx), ...rows, ...configRows(ctx), ...actionRows(ctx)], 'learning')
 }

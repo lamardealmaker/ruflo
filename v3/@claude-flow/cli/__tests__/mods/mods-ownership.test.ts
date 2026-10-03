@@ -197,7 +197,7 @@ describe('ADR-404 no double fire with the real classic hooks', () => {
 
   it('pre-bash is a guard: it blocks even when the handshake names it', () => {
     const r = classic('pre-bash', { tool_input: { command: 'rm -rf /' } }, { RUFLO_MODS_OWNS: 'route,post-edit,pre-bash' });
-    expect(r.status).toBe(1);
+    expect(r.status).toBe(2);
     expect(r.stderr).toContain('[BLOCKED]');
   });
 
@@ -208,7 +208,7 @@ describe('ADR-404 no double fire with the real classic hooks', () => {
     expect(readFileSync(helper, 'utf8')).toContain('RUFLO_MODS_OWNS');
     expect(classic('route', { prompt: 'implement the api' }, { RUFLO_MODS_OWNS: 'route' }).stdout.trim()).toBe('');
     expect(classic('route', { prompt: 'implement the api' }, {}).stdout).toContain('Primary Recommendation');
-    expect(classic('pre-bash', { tool_input: { command: 'rm -rf /' } }, { RUFLO_MODS_OWNS: 'pre-bash' }).status).toBe(1);
+    expect(classic('pre-bash', { tool_input: { command: 'rm -rf /' } }, { RUFLO_MODS_OWNS: 'pre-bash' }).status).toBe(2);
   });
 
   it('hook-handler exports the ownership check it applies', () => {

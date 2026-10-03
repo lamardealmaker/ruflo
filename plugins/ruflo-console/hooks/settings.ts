@@ -1,0 +1,345 @@
+/**
+ * Settings, simple to advanced. Two kinds of setting, both edited in place:
+ *  - a plugin's options, driven by the schema `claude plugin configure <plugin> --json` prints (its type, choices, current
+ *    value and whether it is set), so the console, ruflo-mods and every other ruflo plugin with options share one editor;
+ *    a change is `claude plugin configure <plugin> --values-stdin` with the one key (values are single-line strings);
+ *  - ruflo's own config (`ruflo config get|set`), a curated list of keys.
+ * Every change is one fixed argv on the confirm row. An option that looks like a secret is never shown or edited here.
+ * ▸ ask claude / ▸ ask codex send an explaining prompt about a setting to the AI terminal at once (claude -p in plan mode, codex
+ * exec read-only, the saved per-turn budget) and the reply streams in; nothing is changed by it.
+ */
+import type { ActionSpec } from './actions'
+import { plain } from './data/parse'
+import { RUFLO_MARKET } from './data/snapshot'
+import type { Host } from './host'
+import type { Runner } from './runner'
+import type { State } from './state'
+
+export type Level = 'simple' | 'advanced'
+
+export type SchemaEntry = { type: string; title: string; description: string; default?: string; options?: string[]; isSecret: boolean }
+export type PluginConfig = { pluginId: string; name: string; schema: Record<string, SchemaEntry>; inputs: Record<string, string>; choices: Record<string, string[]>; configured: string[] }
+
+/** Which options a first-time person sees. Anything not listed is advanced; a plugin not listed shows its first four. */
+export const SIMPLE: Record<string, readonly string[]> = {
+  'ruflo-console': ['look', 'boot', 'panel', 'fps'],
+  'ruflo-mods': ['costBudgetUsd', 'costHardStop', 'statusLine'],
+}
+
+/** ruflo's own configuration: key, how it is edited, and who sees it. */
+export type CoreKey = { key: string; title: string; level: Level; kind: 'choice' | 'toggle' | 'number' | 'text'; choices?: readonly string[]; min?: number; max?: number; help: string }
+export const CORE: readonly CoreKey[] = [
+  { key: 'swarm.topology', title: 'Swarm topology', level: 'simple', kind: 'choice', choices: ['hierarchical', 'mesh', 'hierarchical-mesh', 'ring', 'star', 'adaptive'], help: 'how agents are wired: hierarchical keeps a queen in charge, mesh lets peers talk' },
+  { key: 'swarm.maxAgents', title: 'Max agents', level: 'simple', kind: 'number', min: 1, max: 50, help: 'the most agents a swarm may hold at once' },
+  { key: 'swarm.autoScale', title: 'Auto-scale', level: 'advanced', kind: 'toggle', help: 'let the swarm add and retire agents with load' },
+  { key: 'swarm.coordinationStrategy', title: 'Coordination', level: 'advanced', kind: 'text', help: 'how a swarm agrees (consensus by default)' },
+  { key: 'memory.backend', title: 'Memory backend', level: 'simple', kind: 'choice', choices: ['hybrid', 'sqlite', 'agentdb', 'memory'], help: 'where memory entries are stored' },
+  { key: 'memory.enableHNSW', title: 'HNSW index', level: 'advanced', kind: 'toggle', help: 'approximate nearest-neighbour search for memory' },
+  { key: 'memory.cacheSize', title: 'Memory cache', level: 'advanced', kind: 'number', min: 1, max: 100000, help: 'entries kept hot in memory' },
+  { key: 'neural.enabled', title: 'Neural learning', level: 'advanced', kind: 'toggle', help: 'SONA/MoE pattern learning' },
+  { key: 'hooks.enabled', title: 'Hooks', level: 'advanced', kind: 'toggle', help: 'ruflo hooks that learn from your edits and routes' },
+  { key: 'mcp.port', title: 'MCP port', level: 'advanced', kind: 'number', min: 1, max: 65535, help: 'the port ruflo’s MCP server listens on' },
+]
+
+export const CLAUDE_MODELS = ['default', 'haiku', 'sonnet', 'opus'] as const
+export const AI_BUDGETS = [0.25, 0.5, 1, 2] as const
+/** `autoAccept`: claude, codex and swarm turns go straight out with no confirm (they stay read-only, in plan mode, under the budget); ruflo commands still ask. */
+export type AiPrefs = { claudeModel: (typeof CLAUDE_MODELS)[number]; budgetUsd: (typeof AI_BUDGETS)[number]; autoAccept: boolean; /** Claude writes guidance after a mission goal is entered. */ guidance: boolean }
+export const DEFAULT_AI: AiPrefs = { claudeModel: 'default', budgetUsd: 1, autoAccept: false, guidance: true }
+export const AI_KEY = 'ai-prefs'
+
+export type SettingsState = {
+  level: Level
+  /** The plugin whose options are shown (bare name). */
+  plugin: string
+  configs: Map<string, PluginConfig | 'error'>
+  loading: Set<string>
+  /** ruflo config values as `ruflo config get` last answered, by key. */
+  core: Map<string, string>
+  coreLoading: boolean
+  ai: AiPrefs
+  /** The active search (applied with Enter, shown as a chip, cleared with ✕). */
+  query: string
+  /** Only settings that differ from their default. */
+  onlyChanged: boolean
+  /** The last change or failure, with the lines to show. */
+  last: { label: string; ok: boolean; detail: string } | null
+}
+
+const states = new WeakMap<State, SettingsState>()
+
+export function settingsOf(state: State): SettingsState {
+  let found = states.get(state)
+
+  if (found === undefined) {
+    found = { level: 'simple', plugin: 'ruflo-console', configs: new Map(), loading: new Set(), core: new Map(), coreLoading: false, ai: { ...DEFAULT_AI }, query: '', onlyChanged: false, last: null }
+    states.set(state, found)
+  }
+
+  return found
+}
+
+const NAME = /^[A-Za-z0-9._-]{1,80}$/
+const SECRET = /token|secret|password|passwd|credential|api[-_]?key|private/i
+
+const recordOf = (value: unknown): Record<string, unknown> | null => (typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null)
+const flat = (value: unknown, max: number): string => (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? plain(String(value), max) : '')
+
+/** `claude plugin configure <plugin> --json`, parsed: unknown shapes are dropped, never trusted. */
+export function parseConfig(name: string, text: string): PluginConfig | null {
+  let root: Record<string, unknown> | null = null
+
+  try {
+    root = recordOf(JSON.parse(text))
+  } catch {
+    return null
+  }
+
+  const schemaIn = recordOf(root?.schema)
+
+  if (root === null || schemaIn === null) return null
+
+  const schema: Record<string, SchemaEntry> = {}
+
+  for (const [key, raw] of Object.entries(schemaIn).slice(0, 60)) {
+    const entry = recordOf(raw)
+
+    if (entry === null || !NAME.test(key)) continue
+
+    const options = Array.isArray(entry.options) ? entry.options.map(option => flat(option, 60)).filter(Boolean) : undefined
+
+    schema[key] = { type: flat(entry.type, 12) || 'string', title: flat(entry.title, 80) || key, description: flat(entry.description, 400), ...(entry.default !== undefined && { default: flat(entry.default, 80) }), ...(options !== undefined && options.length > 0 && { options }), isSecret: entry.sensitive === true || SECRET.test(key) }
+  }
+
+  const strings = (value: unknown): Record<string, string> =>
+    Object.fromEntries(Object.entries(recordOf(value) ?? {}).filter(([key]) => NAME.test(key)).map(([key, v]) => [key, flat(v, 200)]))
+  const choicesIn = recordOf(root.choices) ?? {}
+
+  return {
+    pluginId: flat(root.pluginId, 100) || `${name}@${RUFLO_MARKET}`,
+    name,
+    schema,
+    inputs: strings(root.inputs),
+    choices: Object.fromEntries(Object.entries(choicesIn).filter(([key]) => NAME.test(key)).map(([key, v]) => [key, Array.isArray(v) ? v.map(item => flat(item, 60)).filter(Boolean) : []])),
+    configured: Array.isArray(root.configured) ? root.configured.map(item => flat(item, 60)).filter(Boolean) : [],
+  }
+}
+
+/** The options this level shows for a plugin, in schema order. */
+export function shownKeys(config: PluginConfig, level: Level): string[] {
+  const keys = Object.keys(config.schema)
+
+  if (level === 'advanced') return keys
+
+  const simple = SIMPLE[config.name]
+
+  return simple === undefined ? keys.slice(0, 4) : keys.filter(key => simple.includes(key))
+}
+
+const configureArgv = (name: string): readonly string[] => ['claude', 'plugin', 'configure', `${name}@${RUFLO_MARKET}`, '--json']
+
+/** Reads one plugin's options (local, read-only, nothing is written). */
+export async function loadPlugin(state: State, host: Host, name: string): Promise<void> {
+  const settings = settingsOf(state)
+
+  if (!NAME.test(name) || settings.loading.has(name)) return
+
+  settings.loading.add(name)
+  host.invalidate()
+
+  try {
+    const result = await host.run(configureArgv(name), 30_000)
+    const parsed = result.exitCode === 0 ? parseConfig(name, result.stdout) : null
+
+    settings.configs.set(name, parsed ?? 'error')
+  } catch {
+    settings.configs.set(name, 'error')
+  } finally {
+    settings.loading.delete(name)
+    host.invalidate()
+  }
+}
+
+const coreArgv = (key: string): readonly string[] => ['npx', '--offline', '-y', '@claude-flow/cli@latest', 'config', 'get', '-k', key]
+
+/** ruflo config values, a few CLI reads at a time (each is a small local command). */
+export async function loadCore(state: State, host: Host, argvPrefix: readonly string[]): Promise<void> {
+  const settings = settingsOf(state)
+
+  if (settings.coreLoading) return
+
+  settings.coreLoading = true
+  host.invalidate()
+
+  try {
+    for (let at = 0; at < CORE.length; at += 4) {
+      await Promise.all(
+        CORE.slice(at, at + 4).map(async entry => {
+          const result = await host.run([...argvPrefix, 'config', 'get', '-k', entry.key], 30_000).catch(() => null)
+          const value = result === null || result.exitCode !== 0 ? '' : (result.stdout.split('\n').map(line => line.replace(/\x1b\[[0-9;]*m/g, '').trim()).find(line => line.startsWith(`${entry.key} =`))?.slice(entry.key.length + 3) ?? '')
+
+          settings.core.set(entry.key, plain(value, 80))
+        }),
+      )
+    }
+  } finally {
+    settings.coreLoading = false
+    host.invalidate()
+  }
+}
+
+/** A value fit for a plugin option: single-line, bounded, and for a choice one of the choices. */
+export function valueOf(config: PluginConfig, key: string, raw: string): string | null {
+  const entry = config.schema[key]
+  const value = raw.trim()
+
+  if (entry === undefined || entry.isSecret || value.includes('\n') || value.length > 200) return null
+  if (entry.type === 'number') return /^-?\d+(\.\d+)?$/.test(value) ? value : null
+
+  const choices = config.choices[key]
+
+  return choices !== undefined && choices.length > 0 ? (choices.includes(value) ? value : null) : value
+}
+
+/** One plugin option change: `claude plugin configure <plugin>@ruflo --values-stdin` with only that key. */
+export function setOption(state: State, name: string, key: string, raw: string, reload: () => void): ActionSpec | null {
+  const config = settingsOf(state).configs.get(name)
+
+  if (config === undefined || config === 'error') return null
+
+  const value = valueOf(config, key, raw)
+
+  if (value === null) return null
+
+  const argv = ['claude', 'plugin', 'configure', `${name}@${RUFLO_MARKET}`, '--values-stdin'] as const
+  const stdin = JSON.stringify({ [key]: value })
+
+  return {
+    label: `set ${name} ${key} to ${value}`,
+    args: [],
+    argv,
+    stdin,
+    shows: `${argv.join(' ')} · stdin ${stdin}`,
+    expect: `${name} ${key} = ${value}`,
+    note: 'Changes this plugin’s user option only (options left out keep their values); reload plugins (/reload-plugins) or restart for it to apply.',
+    onOutput: reload,
+  }
+}
+
+const CORE_VALUE = /^[A-Za-z0-9._:/-]{1,60}$/
+
+/** One ruflo config change: `ruflo config set -k <key> -v <value>`, for a key in the curated list only. */
+export function setCore(state: State, key: string, raw: string, reload: () => void): ActionSpec | null {
+  const entry = CORE.find(candidate => candidate.key === key)
+  const value = raw.trim()
+
+  if (entry === undefined || !CORE_VALUE.test(value)) return null
+  if (entry.kind === 'toggle' && value !== 'true' && value !== 'false') return null
+  if (entry.kind === 'choice' && !entry.choices?.includes(value)) return null
+  if (entry.kind === 'number' && !(/^\d+$/.test(value) && Number(value) >= (entry.min ?? 0) && Number(value) <= (entry.max ?? Number.MAX_SAFE_INTEGER))) return null
+
+  return {
+    label: `set ruflo config ${key} to ${value}`,
+    args: ['config', 'set', '-k', key, '-v', value],
+    expect: `${key} = ${value}`,
+    note: 'Writes ruflo’s configuration for this project; a running daemon or swarm may need a restart to pick it up.',
+    onOutput: reload,
+  }
+}
+
+/** The AI prompt about one setting, for the terminal draft: what it is, what it is now, and what to weigh. */
+export function askPrompt(title: string, description: string, current: string, where: string): string {
+  return `Explain the ruflo setting "${title}" (${where}): ${description} It is currently ${current === '' ? 'unset' : `"${current}"`}. What does each choice change, and what would you recommend for a developer working in this repository? Do not change anything.`
+}
+
+/** Persists and loads the AI terminal's preferences (claude model, per-turn budget); a bad stored value is the default. */
+export async function loadAiPrefs(state: State, host: Host): Promise<void> {
+  const stored = recordOf(await host.storeGet(AI_KEY).catch(() => undefined))
+  const model = CLAUDE_MODELS.find(candidate => candidate === stored?.claudeModel)
+  const budget = AI_BUDGETS.find(candidate => candidate === stored?.budgetUsd)
+
+  settingsOf(state).ai = { claudeModel: model ?? DEFAULT_AI.claudeModel, budgetUsd: budget ?? DEFAULT_AI.budgetUsd, autoAccept: stored?.autoAccept === true, guidance: stored?.guidance !== false }
+}
+
+export function saveAiPrefs(state: State, host: Host, patch: Partial<AiPrefs>): void {
+  const settings = settingsOf(state)
+
+  settings.ai = { ...settings.ai, ...patch }
+  void host.storeSet(AI_KEY, settings.ai).catch(() => undefined)
+  host.invalidate()
+}
+
+/** The ruflo plugins whose options Settings can edit: the console and ruflo-mods always, others as the catalog names them and they are installed. */
+export function pluginNames(state: State, catalogNames: readonly string[]): string[] {
+  const installed = new Set((state.snapshot?.plugins.installed ?? []).filter(plugin => plugin.marketplace === RUFLO_MARKET).map(plugin => plugin.name))
+
+  return [...new Set(['ruflo-console', 'ruflo-mods', ...catalogNames.filter(name => installed.has(name))])]
+}
+
+/** Reads every named plugin's options (a few at a time), so a search can look through all of them. */
+export async function loadAll(state: State, host: Host, names: readonly string[]): Promise<void> {
+  const settings = settingsOf(state)
+  const todo = names.filter(name => !settings.configs.has(name) && !settings.loading.has(name))
+
+  for (let at = 0; at < todo.length; at += 4) await Promise.all(todo.slice(at, at + 4).map(name => loadPlugin(state, host, name)))
+}
+
+export type SettingsActions = {
+  /** Applies a search across every plugin's options, ruflo config and the AI terminal's preferences; '' clears it. */
+  search: (query: string) => void
+  /** Show only settings that differ from their default. */
+  changedOnly: (on: boolean) => void
+  level: (level: Level) => void
+  plugin: (name: string) => void
+  reload: () => void
+  /** Set a plugin option (a choice press, a toggle or Enter in its field): asks first. */
+  option: (name: string, key: string, value: string) => void
+  core: (key: string, value: string) => void
+  ai: (patch: Partial<AiPrefs>) => void
+  /** The confirm row's "always accept": saves the preference and runs the ask that is pending. */
+  alwaysAccept: () => void
+  /** Sends an explaining prompt to the AI terminal (claude or codex) now: the reply streams in, no second click. */
+  ask: (agent: 'claude' | 'codex', title: string, description: string, current: string, where: string) => void
+}
+
+export function settingsActions(state: State, host: Host, runner: Runner, load: (agent: 'claude' | 'codex', text: string) => void, corePrefix: () => readonly string[], names: () => readonly string[]): SettingsActions {
+  const settings = settingsOf(state)
+  const reloadPlugin = () => void loadPlugin(state, host, settings.plugin)
+  const reloadCore = () => void loadCore(state, host, corePrefix())
+
+  return {
+    search: query => {
+      settings.query = plain(query, 80).trim()
+      host.invalidate()
+      if (settings.query !== '') void loadAll(state, host, names())
+    },
+    changedOnly: on => {
+      settings.onlyChanged = on
+      host.invalidate()
+    },
+    level: level => {
+      settings.level = level
+      host.invalidate()
+    },
+    plugin: name => {
+      settings.plugin = name
+      if (!settings.configs.has(name)) void loadPlugin(state, host, name)
+      host.invalidate()
+    },
+    reload: () => {
+      settings.configs.clear()
+      reloadPlugin()
+      reloadCore()
+    },
+    option: (name, key, value) => runner.ask(setOption(state, name, key, value, reloadPlugin), `“${plain(value, 40)}” is not a value ${key} accepts`),
+    core: (key, value) => runner.ask(setCore(state, key, value, reloadCore), `“${plain(value, 40)}” is not a value ${key} accepts`),
+    ai: patch => saveAiPrefs(state, host, patch),
+    alwaysAccept: () => {
+      saveAiPrefs(state, host, { autoAccept: true })
+      state.terminal.asked = null
+      state.terminal.draft = ''
+      void runner.confirm()
+    },
+    ask: (agent, title, description, current, where) => load(agent, askPrompt(title, description, current, where)),
+  }
+}

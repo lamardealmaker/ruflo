@@ -1,0 +1,71 @@
+/** The shapes Mission Control keeps: the ledger (missions, tasks, events), the view state, and the actions the views call. */
+import type { Guidance } from './mission-guidance'
+import type { Screen } from './mission-options'
+import type { Plan, Profile, Rigor } from './goap'
+
+export type LedgerTask = { id: string; title: string; phase: string; stage?: string; agent: string; requirement: string; dependsOn: string[]; rufloTaskId?: string; dispatchedAtMs?: number }
+export type LedgerEvent = { seq: number; atMs: number; type: string; taskId?: string; status?: string; evidenceRef?: string; note?: string }
+export type MissionRecord = {
+  id: string
+  objective: string
+  profile: Profile
+  rigor: Rigor
+  planDigest?: string
+  tasks: LedgerTask[]
+  acceptance: { id: string; check: string }[]
+  events: LedgerEvent[]
+  paused: boolean
+  cancelled: boolean
+  auto: boolean
+  createdAtMs: number
+}
+export type McTab = 'plan' | 'tasks' | 'agents' | 'evidence' | 'record'
+export type Derived = 'done' | 'running' | 'ready' | 'waiting' | 'failed' | 'cancelled'
+
+export type McState = {
+  goal: string
+  profile: Profile
+  rigor: Rigor
+  /** True once the person picked the profile (otherwise it follows the goal's words). */
+  isProfilePicked: boolean
+  planned: Plan | null
+  missions: Map<string, MissionRecord>
+  active: string | null
+  tab: McTab
+  /** The last instruction sent to Claude, kept so it can be edited and sent again. */
+  lastGuide: string
+  /** Claude's guidance on the goal, as it arrives (mission-guidance.ts). */
+  guidance: Guidance | null
+  /** AIDefence's verdict on the goal (null: not screened yet or the screen is off), and whether the screen is on. */
+  screen: Screen | null
+  isScreenOn: boolean
+  last: { label: string; ok: boolean; detail: string } | null
+}
+
+export type MissionActions = {
+  goal: (text: string) => void
+  profile: (profile: Profile) => void
+  rigor: (rigor: Rigor) => void
+  tab: (tab: McTab) => void
+  create: () => void
+  select: (id: string) => void
+  /** Hands the next ready task to the primary session (asks first: it starts a model turn). */
+  next: () => void
+  pause: () => void
+  resume: () => void
+  cancel: () => void
+  /** Auto-run: when a task finishes and the session is idle, hand over the next ready one without asking. */
+  auto: (on: boolean) => void
+  /** Ask aside: `/btw <question>` beside the running task (run now when idle, otherwise prepared in the prompt box). */
+  aside: (question: string) => void
+  /** Runs a ruflo-goals skill in the main Claude UI on the goal (or the active mission's objective). */
+  skill: (id: string) => void
+  /** Guide Claude: a visible instruction to the primary session (asks first: it starts a model turn). */
+  guide: (text: string) => void
+  /** Asks claude -p for guidance on the current goal again (asks first unless always accept). */
+  askGuidance: () => void
+  /** Runs another ruflo plugin's slash command (ruOS, AIDefence, SPARC, ...) on the goal in the main Claude UI. */
+  capability: (slash: string) => void
+  /** Turns the AIDefence screen of mission text on or off. */
+  screen: (on: boolean) => void
+}

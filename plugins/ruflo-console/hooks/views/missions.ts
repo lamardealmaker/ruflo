@@ -1,7 +1,7 @@
 import type { RenderElement } from 'claude-code'
 
 import { money, type Mission } from '../data/missions'
-import { ago, col, kv, rule, text, THEME, type Ctx } from './common'
+import { ago, kv, rule, text, THEME, type Ctx } from './common'
 
 const STATE_COLOR: Record<string, string> = { running: THEME.warn, verifying: THEME.warn, completed: THEME.ok, failed: THEME.bad, blocked: THEME.bad, paused: THEME.info, queued: THEME.info }
 
@@ -39,14 +39,14 @@ function missionRows(ctx: Ctx, mission: Mission, isFirst: boolean): RenderElemen
  * ADR-406 missions, observed only: what `.claude-flow/missions/observation.json` says, as of its own `observedAt`. The
  * console takes no mission action here; those go through `ruflo mission action` (a button is never authorization).
  */
-export function missionsView(ctx: Ctx): RenderElement {
+export function observationRows(ctx: Ctx): RenderElement[] {
   const observation = ctx.state.snapshot?.missions ?? null
-  const rows: RenderElement[] = [rule(ctx, 'Missions', observation === null ? 'no observation' : `${observation.missions.length}${observation.isTruncated ? '+' : ''} · observed ${ago(observation.observedAtMs, ctx.nowMs)}`)]
+  const rows: RenderElement[] = [rule(ctx, 'Mission record', observation === null ? 'no observation' : `${observation.missions.length}${observation.isTruncated ? '+' : ''} · observed ${ago(observation.observedAtMs, ctx.nowMs)}`)]
 
   if (observation === null) {
-    rows.push(text(ctx, 'n/a — no .claude-flow/missions/observation.json (ADR-406). `npx ruflo mission create --objective <text> --request-id <id>` starts one.', { dimColor: true }))
+    rows.push(text(ctx, ' No mission record yet (ADR-406): create one from a goal in Plan.', { color: THEME.warn }))
 
-    return col(ctx, rows, 'missions')
+    return rows
   }
 
   if (observation.missions.length === 0) rows.push(text(ctx, 'No missions yet.', { dimColor: true }))
@@ -60,5 +60,5 @@ export function missionsView(ctx: Ctx): RenderElement {
   rows.push(kv(ctx, 'legend', '○ pending · ◐ running · ● recorded done (recorded, not verified) · ✖ failed'))
   rows.push(text(ctx, 'observation only: actions go through `npx ruflo mission action` with a request id and the expected revision', { dimColor: true }))
 
-  return col(ctx, rows, 'missions')
+  return rows
 }

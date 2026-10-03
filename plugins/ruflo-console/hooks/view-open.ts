@@ -1,0 +1,31 @@
+/**
+ * What opening a view reads. Each view's own local, read-only loaders run when it is opened (never on a timer), so a
+ * closed or hidden console reads nothing; anything that reaches the network or writes waits for a click.
+ */
+import { loadEvolve } from './evolve'
+import type { Host } from './host'
+import { loadCatalog } from './plugin-catalog'
+import { loadAiPrefs, loadCore, loadPlugin, settingsOf } from './settings'
+import { CLI_PREFIXES, type State } from './state'
+
+import { loadCommandNames } from './mission-skills'
+
+export function openLoaders(state: State, host: Host, view: State['view']): void {
+  // Mission Control asks the session which slash commands it offers (the ruflo-goals skills among them).
+  // Every section can offer the slash command of the plugin that fits it, so the session's commands are read once.
+  if (view === 'missions' || state.commandNames.length === 0) void loadCommandNames(state, host)
+
+  // Self-Evolution reads ruflo's own flywheel files (local, no CLI run); its checks wait for a click.
+  if (view === 'evolve') void loadEvolve(state, host)
+
+  // The catalog is read from the marketplace clone on disk: local, so opening it is enough.
+  if (view === 'market') loadCatalog(state, host)
+
+  // Settings reads are local and read-only: the plugin's option schema, ruflo's config values, the saved AI preferences.
+  if (view === 'settings') {
+    void loadAiPrefs(state, host)
+    loadCatalog(state, host)
+    void loadPlugin(state, host, settingsOf(state).plugin)
+    void loadCore(state, host, CLI_PREFIXES[state.options.cli])
+  }
+}

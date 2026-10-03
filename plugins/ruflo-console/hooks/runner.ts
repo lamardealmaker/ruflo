@@ -4,8 +4,10 @@
  * took; a read runs at once and shows what it printed. Nothing reaches `$` but through the Host.
  */
 import type { ActionSpec } from './actions'
+import { rememberKey } from './remember'
 import { plain } from './data/parse'
 import type { Host } from './host'
+import { labLines } from './mh-lab'
 import { outputLines } from './ops'
 import { filterPalette, paletteEntries, textOfQuery, type PaletteEntry } from './palette'
 import { CLI_PREFIXES, type State } from './state'
@@ -26,10 +28,13 @@ export type Runner = {
   cancel: () => void
   runEntry: (entry: PaletteEntry, text: string) => void
   runById: (id: string, text: string) => boolean
+  /** Resolves when the read started last has finished: `/ruflo run` waits on it to answer with what it printed. */
+  settled: () => Promise<void>
 }
 
 export function createRunner(state: State, host: Host, deps: RunnerDeps): Runner {
   let pendingSpec: ActionSpec | null = null
+  let inflight: Promise<void> = Promise.resolve()
 
   const say = (label: string, ok: boolean, detail: string, lines?: string[]) => {
     state.outcome = { label, ok, verified: 'n/a', detail, atMs: Date.now(), ...(lines !== undefined && { lines }) }
@@ -37,17 +42,40 @@ export function createRunner(state: State, host: Host, deps: RunnerDeps): Runner
   }
 
   async function execute(spec: ActionSpec): Promise<void> {
+    // A harness run reports into the terminal and may take minutes: it does not hold the other buttons.
+    if (spec.run !== undefined) {
+      const running = spec.run()
+
+      // A read that runs its own command (a skills search) is waited on, so `/ruflo run` answers with what it found.
+      if (spec.isReadOnly === true) await running
+
+      return
+    }
+
+    // The x.ruv.io board keeps its own result panel, so its runs never show in the MetaHarness lab.
+    const panel = spec.board === 'xruv' ? state.xruv : state.lab
+
     state.isActing = true
+    if (spec.lab !== undefined) panel.running = { id: spec.lab, label: spec.label, startedAtMs: Date.now() }
     host.invalidate()
 
     try {
-      const result = await host.run([...CLI_PREFIXES[state.options.cli], ...spec.args], 90_000)
+      const result = await host.run(spec.argv ?? [...CLI_PREFIXES[state.options.cli], ...spec.args], spec.timeoutMs ?? 90_000, spec.stdin)
       const answer = /"success"\s*:\s*(true|false)/.exec(result.stdout)?.[1]
       const error = /"error"\s*:\s*"([^"]{0,160})"/.exec(result.stdout)?.[1] ?? /\[ERROR\]\s*(.{0,160})/.exec(result.stdout)?.[1]
-      const ok = result.exitCode === 0 && answer !== 'false' && error === undefined
+      // `mcp exec` wraps a tool's failure as `"isError": true` with its message escaped inside: that is a failure too.
+      const ok = result.exitCode === 0 && answer !== 'false' && error === undefined && !/"isError"\s*:\s*true/.test(result.stdout)
+
+      // A lab run's output goes to the lab's result panel, scrolled from its top; the footer keeps the one-line outcome.
+      if (spec.lab !== undefined) {
+        panel.result = { id: spec.lab, label: spec.label, ok, exitCode: result.exitCode, ...(spec.note !== undefined && { note: spec.note }), lines: spec.read?.(result.stdout, result.stderr, ok) ?? (spec.lines ?? ((out, err) => labLines(spec.lab ?? '', out, err)))(result.stdout, result.stderr), atMs: Date.now() }
+        state.select.item = 0
+      }
+      // Keyed on the exit, not on `ok`: relay text in a read may carry an "error" key of its own.
+      if (result.exitCode === 0) spec.onOutput?.(result.stdout)
 
       if (spec.isReadOnly === true) {
-        say(spec.label, ok, ok ? 'the ruflo CLI answered:' : plain(error ?? result.stderr, 160) || `exit ${result.exitCode}`, outputLines(result.stdout))
+        say(spec.label, ok, ok ? 'the ruflo CLI answered:' : plain(error ?? result.stderr, 160) || `exit ${result.exitCode}`, spec.lab === undefined ? outputLines(result.stdout) : undefined)
 
         return
       }
@@ -60,34 +88,52 @@ export function createRunner(state: State, host: Host, deps: RunnerDeps): Runner
         label: spec.label,
         ok: ok && verified !== 'no',
         verified,
-        detail: ok ? `ruflo answered ok; expected ${spec.expect}` : plain(error ?? result.stderr, 160) || `exit ${result.exitCode}`,
+        detail: ok ? `${spec.argv === undefined ? 'ruflo' : 'the command'} answered ok; expected ${spec.expect}` : plain(error ?? result.stderr, 160) || `exit ${result.exitCode}`,
         atMs: Date.now(),
       }
     } catch (error) {
-      say(spec.label, false, plain(error instanceof Error ? error.message : String(error), 160) || 'refused')
+      const why = plain(error instanceof Error ? error.message : String(error), 160) || 'refused'
+
+      if (spec.lab !== undefined) panel.result = { id: spec.lab, label: spec.label, ok: false, exitCode: null, ...(spec.note !== undefined && { note: spec.note }), lines: [why], atMs: Date.now() }
+      say(spec.label, false, why)
     } finally {
       state.isActing = false
+      panel.running = null
       host.invalidate()
     }
   }
 
   function ask(spec: ActionSpec | null, why: string): void {
     state.palette.isOpen = false
+    // Where this came from: the page puts the confirm and the answer right after that element. A headless run has no press, so it falls back to the top.
+    state.origin = state.lastPressed
+    state.lastPressed = null
 
     if (spec === null) {
+      pendingSpec = null
+      state.pending = null
       say('nothing to do', false, why)
 
       return
     }
 
     if (spec.isReadOnly === true) {
-      void execute(spec)
+      inflight = execute(spec)
+
+      return
+    }
+
+    // A kind of action the person said never to ask about again runs now, its label saying so.
+    const kind = rememberKey(spec)
+
+    if (kind !== null && state.allowed.has(kind)) {
+      inflight = execute({ ...spec, label: `${spec.label} (remembered: not asked)` })
 
       return
     }
 
     pendingSpec = spec
-    state.pending = { label: spec.label, args: spec.args, expect: spec.expect, askedAtMs: Date.now() }
+    state.pending = { ...(kind !== null && { rememberKey: kind }), ...(spec.scope !== undefined && { scope: spec.scope }), label: spec.label, args: spec.args, expect: spec.expect, askedAtMs: Date.now(), ...(spec.shows !== undefined && { shows: spec.shows }), ...(spec.note !== undefined && { note: spec.note }) }
     host.invalidate()
   }
 
@@ -123,7 +169,7 @@ export function createRunner(state: State, host: Host, deps: RunnerDeps): Runner
         ask(entry.run.spec, entry.run.why)
         break
       case 'text':
-        ask(entry.run.make(text), `type "${entry.run.keyword} <text>"; text may not start with -`)
+        ask(entry.run.make(text), entry.run.why?.(text) ?? `type "${entry.run.keyword} <text>"; text may not start with -`)
         break
       case 'view':
         deps.setView(entry.run.view)
@@ -151,5 +197,5 @@ export function createRunner(state: State, host: Host, deps: RunnerDeps): Runner
     return true
   }
 
-  return { ask, confirm, cancel, runEntry, runById }
+  return { ask, confirm, cancel, runEntry, runById, settled: () => inflight }
 }

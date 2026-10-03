@@ -21,6 +21,7 @@ export const PROJECT = {
   swarm: '.claude-flow/swarm/swarm-state.json',
   pointer: '.swarm/state.json',
   agents: '.claude-flow/agents/store.json',
+  hiveAgents: '.claude-flow/agents.json',
   tasks: '.claude-flow/tasks/store.json',
   claims: '.claude-flow/claims/claims.json',
   hive: '.claude-flow/hive-mind/state.json',

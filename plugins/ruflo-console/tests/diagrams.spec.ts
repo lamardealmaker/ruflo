@@ -7,7 +7,8 @@ import { describe, expect, it } from 'vitest'
 import { gaugePicture, pipelinePicture, radarPicture, samplesPicture, trendPicture } from '../hooks/gfx/charts'
 import { flowModelOf, flowPicture, flowRows, ringOf } from '../hooks/gfx/flow'
 import { federationPicture, ganttPicture, heatmapPicture } from '../hooks/gfx/maps'
-import { activityPicture, curvePicture, edges, headerPicture, layout, markPicture, topologyPicture, type TopoModel } from '../hooks/gfx/pictures'
+import { activityPicture, bannerPicture, bootPicture, curvePicture, edges, headerPicture, layout, markPicture, topologyPicture, type TopoModel } from '../hooks/gfx/pictures'
+import { isBooting, newState, optionsOf } from '../hooks/state'
 import type { Grid } from '../hooks/gfx/raster'
 import { parseClaims, type ClaimRecord } from '../hooks/data/parse'
 import { RUFLO_FILES } from './fixtures/ruflo-run'
@@ -64,12 +65,23 @@ describe('diagrams', () => {
   })
 
   it('an event pulse is data: it runs only in the 1.4 s after its event, and the frames differ while it does', () => {
-    const model = swarmOf(3, 'hierarchical', 99)
+    const idle = (model: TopoModel): TopoModel => ({ ...model, nodes: model.nodes.map(node => (node.isLeader ? node : { ...node, status: 'idle' })) })
+    const model = idle(swarmOf(3, 'hierarchical', 99))
     const frame = (t: number) => topologyPicture(model, 60, 12, t).encode()
 
     expect(frame(1_300)).not.toBe(frame(1_900))
-    // Before the event, at two instants where the heartbeat (decoration) rests: nothing else moves.
+    // Before the event, with every agent idle, at two instants where the heartbeat (decoration) rests: nothing else moves.
     expect(frame(0)).toBe(frame(Math.PI * 260))
+  })
+
+  it('work in flight is data too: a busy agent keeps a dot moving with no event, and it stops when the agent goes idle', () => {
+    const busy: TopoModel = { topology: 'hierarchical', nodes: [{ id: 'q', label: 'queen', status: 'leader', isLeader: true }, { id: 'a', label: 'coder', status: 'busy', isLeader: false }] }
+    const idle: TopoModel = { ...busy, nodes: busy.nodes.map(node => (node.isLeader ? node : { ...node, status: 'idle' })) }
+    // Two instants where the leader's heartbeat rests, so only data can differ between them.
+    const [t0, t1] = [0, Math.PI * 260]
+
+    expect(topologyPicture(busy, 60, 12, t0).encode()).not.toBe(topologyPicture(busy, 60, 12, t1).encode())
+    expect(topologyPicture(idle, 60, 12, t0).encode()).toBe(topologyPicture(idle, 60, 12, t1).encode())
   })
 
   it('claims fall in their lanes and a ring counts down a TTL on the real clock, else fills with age', () => {
@@ -109,5 +121,61 @@ describe('diagrams', () => {
 
     times.sort((a, b) => a - b)
     expect(times[25]).toBeLessThan(4)
+  })
+})
+
+describe('BBS look', () => {
+  const row = (grid: ReturnType<typeof bannerPicture>, y: number, width: number) => String.fromCodePoint(...Array.from({ length: width }, (_, x) => grid.glyph(x, y) || 32))
+
+  it('the banner spells RUFLO in two half-block rows, names the node, and its cursor blinks', () => {
+    const on = bannerPicture('ruflo-demo', 60, 0)
+    const off = bannerPicture('ruflo-demo', 60, 530)
+
+    expect(row(on, 0, 19)).toBe('█▀█ █ █ █▀▀ █   █▀█')
+    expect(row(on, 1, 19)).toBe('█▀▄ █▄█ █▀  █▄▄ █▄█')
+    expect(row(on, 1, 60)).toContain('▸ npx ruflo · ruflo-demo █')
+    expect(row(off, 1, 60).slice(21)).not.toContain('█')
+    expect(on.encode()).not.toBe(off.encode())
+  })
+
+  it('bbs is the default look; plain is the only other value', () => {
+    expect(optionsOf(undefined).look).toBe('bbs')
+    expect(optionsOf({ look: 'plain' } as never).look).toBe('plain')
+    expect(optionsOf({ look: 'neon' } as never).look).toBe('bbs')
+  })
+})
+
+describe('BBS boot screen', () => {
+  const text = (grid: ReturnType<typeof bootPicture>, width: number) => Array.from({ length: grid.rows }, (_, y) => String.fromCodePoint(...Array.from({ length: width }, (_, x) => grid.glyph(x, y) || 32))).join('\n')
+
+  it('dials, connects, draws the logo and fills a bar from elapsed time and answered reads', () => {
+    expect(text(bootPicture('demo', 60, 100, 0, 10), 60)).toContain('ATDT')
+    expect(text(bootPicture('demo', 60, 100, 0, 10), 60)).not.toContain('CONNECT')
+
+    const done = text(bootPicture('demo', 60, 3_800, 10, 10), 60)
+
+    expect(done).toContain('CONNECT 115200 / ARQ / V.42bis')
+    expect(done).toContain('│ ~~~~~ │')
+    expect(done).toContain('▐▌')
+    // The tubes are dark before the line connects, lit once it has: the same cell, two colours.
+    const fgAt = (age: number) => { const g = bootPicture('demo', 60, age, 3, 10); for (let i = 0; i < g.columns * g.rows; i++) if (g.cells[i * 3] === 0x256d) return g.cells[i * 3 + 1]; return -1 }
+    expect(fgAt(500)).not.toBe(fgAt(3_800))
+    expect(done).toContain('> handshake ok · node demo')
+    expect(done).toContain('100%  reads 10/10')
+  })
+
+  it('plays at least 3.2 s, longer while the first read is out, never past 6 s; only with the bbs look and boot on', () => {
+    const state = newState({})
+
+    state.pane.bootAtMs = 1_000
+    expect(isBooting(state, 1_100)).toBe(true)
+    expect(isBooting(state, 5_000)).toBe(true) // past the 3.2 s minimum, but no snapshot yet
+    state.snapshot = {} as never
+    expect(isBooting(state, 5_000)).toBe(false)
+    expect(isBooting(state, 2_000)).toBe(true)
+    state.snapshot = null
+    expect(isBooting(state, 7_500)).toBe(false)
+    expect(isBooting({ ...state, options: { ...state.options, boot: false } }, 1_100)).toBe(false)
+    expect(isBooting({ ...state, options: { ...state.options, look: 'plain' } }, 1_100)).toBe(false)
   })
 })

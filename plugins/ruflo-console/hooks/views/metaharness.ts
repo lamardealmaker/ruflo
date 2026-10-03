@@ -2,6 +2,7 @@ import type { RenderElement } from 'claude-code'
 
 import type { Flywheel, HarnessScore } from '../data/cli'
 import { ago, col, kv, live, picture, rule, sourceLine, text, THEME, type Ctx } from './common'
+import { labRows } from './mh-lab'
 
 /**
  * MetaHarness is optional (ADR-150): every line here degrades to "unavailable" with the CLI's reason, and nothing in
@@ -45,7 +46,8 @@ export function metaharnessView(ctx: Ctx): RenderElement {
   rows.push(kv(ctx, 'active policy', policy === null ? 'n/a — no .claude-flow/harness-active-policy.json' : `${policy.champion.slice(0, 22)}… · ${policy.tier ?? 'n/a'} · ${policy.layer ?? 'n/a'} · applied ${ago(policy.appliedAtMs, nowMs)}`))
   rows.push(rule(ctx, 'Audit trend', 'worst severity per stored audit'))
   rows.push(picture(ctx, 'trend', 'audit trend needs a terminal'))
-  rows.push(text(ctx, 'from `metaharness audit-list` (memory namespace metaharness-audit) · p → "run a MetaHarness audit" adds one', { dimColor: true }))
+  rows.push(text(ctx, 'from `metaharness audit-list` (memory namespace metaharness-audit) · ▸ OIA AUDIT below adds one', { dimColor: true }))
+  rows.push(...labRows(ctx))
 
   return col(ctx, rows, 'metaharness')
 }

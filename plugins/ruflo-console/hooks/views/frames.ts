@@ -5,22 +5,25 @@
  */
 import type { AuditTrend, HarnessScore, Intelligence } from '../data/cli'
 import { recentByAgent } from '../data/events'
+import { agentLabels } from '../data/parse'
 import type { Snapshot } from '../data/snapshot'
 import type { Channels, Peers, Roster } from '../data/cli'
 import { pipelinePicture, radarPicture, samplesPicture, trendPicture, gaugePicture, type Stage } from '../gfx/charts'
+import { loopPicture, loopStagesOf } from '../gfx/evolve'
 import { flowModelOf, flowPicture, flowRows } from '../gfx/flow'
 import { federationPicture, ganttPicture, heatmapPicture, type FedNode, type HealthRow, type Lane } from '../gfx/maps'
-import { activityPicture, curvePicture, headerPicture, PULSE_MS, topologyPicture, type TopoModel } from '../gfx/pictures'
+import { activityPicture, bannerPicture, bootPicture, titlePicture, curvePicture, headerPicture, PULSE_MS, topologyPicture, type TopoModel } from '../gfx/pictures'
 import type { Grid } from '../gfx/raster'
-import { severityOf } from '../data/cli'
+import { PROBES, severityOf } from '../data/cli'
 import { EXPECTED_IN_MARKET, RUFLO_MARKET } from '../data/snapshot'
-import { rowsOf, type State } from '../state'
+import { isBooting, isCompactPane, VIEWS, type State } from '../state'
 import { live } from './common'
+import { hivePictures } from './hive'
 import { openTasks } from './select'
 
 export const MAX_NODES = 100
 export const HEALTH_CHECKS = ['installed', 'enabled', 'clone', 'mod'] as const
-const TIMELINE_MS = 15 * 60_000
+import { watchOf } from '../watch'
 /** The radar's axis words: the score's own dimension names, shortened to fit at a spoke's end. */
 const AXIS: Record<string, string> = { harnessFit: 'fit', compileConfidence: 'compile', taskCoverage: 'coverage', toolSafety: 'safety', memoryUsefulness: 'memory' }
 
@@ -31,6 +34,7 @@ export function topoModelOf(snapshot: Snapshot | null, pulses: Map<string, numbe
   if (snapshot === null || (swarm === null && snapshot.hive === null && snapshot.agents.length === 0)) return null
 
   const members = swarm !== null && swarm.agentIds.length > 0 ? snapshot.agents.filter(agent => swarm.agentIds.includes(agent.id)) : snapshot.agents
+  const labels = agentLabels(snapshot.agents)
   const leaderId = snapshot.hive?.queen ?? swarm?.id ?? 'swarm'
   const leaderPulse = pulses.get(leaderId)
 
@@ -41,7 +45,7 @@ export function topoModelOf(snapshot: Snapshot | null, pulses: Map<string, numbe
       ...members.slice(0, MAX_NODES - 1).map(agent => {
         const pulseAtMs = pulses.get(agent.id)
 
-        return { id: agent.id, label: agent.name ?? agent.type, status: agent.status, isLeader: false, ...(pulseAtMs !== undefined && { pulseAtMs }) }
+        return { id: agent.id, label: labels.get(agent.id) ?? agent.type, status: agent.status, isLeader: false, ...(pulseAtMs !== undefined && { pulseAtMs }) }
       }),
     ],
   }
@@ -92,12 +96,13 @@ export function healthRowsOf(state: State): HealthRow[] {
 
 /** The timeline's lanes over the last 15 minutes: ruflo agents' observed statuses and Claude Code's tool calls. */
 export function lanesOf(state: State, nowMs: number): Lane[] {
-  const from = nowMs - TIMELINE_MS
+  const from = nowMs - watchOf(state).rangeMs
+  const labels = agentLabels(state.snapshot?.agents ?? [])
   const agents = (state.snapshot?.agents ?? []).slice(0, 24).map(agent => {
     const log = state.statusLog.get(agent.id) ?? []
 
     return {
-      label: agent.name ?? agent.type,
+      label: labels.get(agent.id) ?? agent.type,
       spans: log.map((entry, i) => ({ fromMs: Math.max(from, entry.atMs), toMs: log[i + 1]?.atMs ?? nowMs, busy: /busy|active|working/i.test(entry.status) })).filter(span => span.toMs >= from),
       ticks: [],
     }
@@ -115,7 +120,27 @@ export function picturesOf(state: State, columns: number, nowMs: number, t: numb
   const width = Math.max(20, Math.min(200, columns))
   const snapshot = state.snapshot
 
-  if (!(state.pane.rows > 0 && state.pane.rows < rowsOf(state.view))) pictures.set('header', headerPicture(`◆ ruflo · ${state.cwd.split('/').filter(Boolean).at(-1) ?? ''}`, Math.min(width, 40), t))
+  // The BBS boot screen owns the pane for its first seconds; nothing else is drawn under it.
+  if (isBooting(state, nowMs)) {
+    pictures.set('boot', bootPicture(state.cwd.split('/').filter(Boolean).at(-1) ?? '', Math.min(width, 72), nowMs - state.pane.bootAtMs, state.probes.size, PROBES.length))
+
+    return pictures
+  }
+
+  if (!isCompactPane(state) && state.view === 'menu') {
+    const project = state.cwd.split('/').filter(Boolean).at(-1) ?? ''
+
+    pictures.set('header', state.options.look === 'bbs' ? bannerPicture(project, Math.min(width, 72), t) : headerPicture(`◆ ruflo · ${project}`, Math.min(width, 40), t))
+  }
+
+  // BBS: every view's name as ANSI-style block art under the tabs, compact or not (the neon sign is the boot's alone).
+  if (state.options.look === 'bbs') {
+    const page = state.isHelp ? 'help' : state.palette.isOpen ? 'palette' : state.view === 'agent' ? 'agent' : (VIEWS.find(view => view.id === state.view)?.label ?? state.view)
+    // The menu is the RUFLO board itself; every other page reads `RUFLO | PAGE`, the logo's style left of the page's name.
+    const name = state.view === 'menu' && !state.isHelp && !state.palette.isOpen ? 'ruflo bbs' : `ruflo | ${page}`
+
+    pictures.set('title', titlePicture(name, Math.min(width, 120), t))
+  }
 
   switch (state.view) {
     case 'overview':
@@ -127,8 +152,11 @@ export function picturesOf(state: State, columns: number, nowMs: number, t: numb
       if (model !== null) pictures.set('topology', topologyPicture(model, width, topologyRows(width, model.nodes.length), t))
       break
     }
+    case 'hive':
+      for (const [key, grid] of hivePictures(state, width, nowMs, t)) pictures.set(key, grid)
+      break
     case 'claims': {
-      const cards = flowModelOf(snapshot?.claims ?? [], openTasks(state), snapshot?.agents ?? [])
+      const cards = flowModelOf(snapshot?.claims ?? [], openTasks(state), snapshot?.agents ?? [], snapshot?.tasks ?? [])
 
       if (cards.length > 0) pictures.set('flow', flowPicture(cards, width, flowRows(cards), nowMs))
       break
@@ -182,10 +210,13 @@ export function picturesOf(state: State, columns: number, nowMs: number, t: numb
       pictures.set('burn', samplesPicture('spend since load', state.history.spend, width))
       break
     }
+    case 'evolve':
+      pictures.set('evolve-loop', loopPicture(loopStagesOf(state.evolve), width, t))
+      break
     case 'timeline': {
       const lanes = lanesOf(state, nowMs)
 
-      if (lanes.length > 0) pictures.set('gantt', ganttPicture(lanes, width, nowMs - TIMELINE_MS, nowMs))
+      if (lanes.length > 0) pictures.set('gantt', ganttPicture(lanes, width, nowMs - watchOf(state).rangeMs, nowMs))
       break
     }
     default:

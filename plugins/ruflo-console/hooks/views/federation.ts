@@ -1,7 +1,7 @@
 import type { RenderElement } from 'claude-code'
 
 import type { Channels, Peers, Roster } from '../data/cli'
-import { ago, col, kv, live, picture, rule, sourceLine, text, THEME, type Ctx } from './common'
+import { ago, col, kv, live, picture, rule, sourceLine, starts, text, THEME, type Ctx } from './common'
 
 /**
  * This node's federation standing from local state and local CLI answers only. The roster lives on the public relay,
@@ -24,7 +24,7 @@ export function federationView(ctx: Ctx): RenderElement {
     kv(
       ctx,
       'nostr identity',
-      snap?.hasNostrKey === true ? '~/.ruflo/nostr.key present (never read here)' : snap?.hasNostrKey === false ? 'none — `npx ruflo federation join` makes one' : 'n/a',
+      snap?.hasNostrKey === true ? '~/.ruflo/nostr.key present (never read here)' : snap?.hasNostrKey === false ? 'none yet (join below makes one)' : 'n/a',
       snap?.hasNostrKey === true ? THEME.ok : undefined,
     ),
   )
@@ -40,6 +40,8 @@ export function federationView(ctx: Ctx): RenderElement {
           : `${peers.peers.length} pinned peers accepted for envelopes (agentbbs peers.json)`,
     ),
   )
+
+  if (snap?.hasNostrKey === false) rows.push(starts(ctx, 'This node has no federation identity yet.', ['federation-join', 'channel-read']))
 
   rows.push(rule(ctx, 'Peers', 'agentbbs'))
 

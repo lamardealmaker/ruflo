@@ -8,7 +8,12 @@ import { CATALOG_PATH, commandsText, FALLBACK, parseCatalog, type Catalog } from
 import type { Controller } from './controller'
 import { median, p95 } from './controller'
 import { plain } from './data/parse'
+import { loadEvolve } from './evolve'
+import { labAnswer } from './mh-lab'
+import { skillsAnswer } from './skills-lab'
 import { VIEWS, type State } from './state'
+import { missionAnswer } from './mission-text'
+import { xruvAnswer } from './xruv'
 import { barText } from './views/bar'
 import { viewText } from './views/pane'
 
@@ -58,6 +63,8 @@ async function dumpOf(control: Controller, state: State, view: State['view']): P
   try {
     await control.refresh()
     await Promise.race([control.probe(true), new Promise(resolve => setTimeout(resolve, DUMP_WAIT_MS))])
+    // Self-Evolution draws from its own file read, which opening the view starts: a dump waits for it too.
+    if (view === 'evolve') await loadEvolve(state, control.host)
 
     return viewText({ state, nowMs: Date.now(), columns: 100, act: control.actions }, view)
   } finally {
@@ -72,7 +79,9 @@ export async function dispatch(control: Controller, state: State, args: string, 
     case 'open':
       // Without a pane to show (claude -p, an SDK host), the view is answered as text in the command's row instead.
       if (!state.isInteractive) return { text: await dumpOf(control, state, intent.view ?? state.view) }
+      // The BBS look lands on its main menu when the cockpit opens with no view named, like a board after login.
       if (intent.view !== null) control.setView(intent.view)
+      else if (!state.pane.isOpen && state.options.look === 'bbs') control.setView('menu')
 
       return open(control, state, VIEWS.find(view => view.id === state.view)?.label ?? 'Agent')
     case 'help':
@@ -102,13 +111,24 @@ export async function dispatch(control: Controller, state: State, args: string, 
 
       return open(control, state, 'palette')
     case 'run': {
+      // A headless budget ask checks the installed CLI's help before building a setter spec.
+      if (intent.paletteId === 'cost-budget' || intent.paletteId.startsWith('cost-budget-')) await dumpOf(control, state, 'cost')
+      const askedAtMs = Date.now()
       const isRun = control.actions.run(intent.paletteId, intent.text)
 
       if (!isRun) return { text: `No palette entry "${plain(intent.paletteId, 40)}" right now. /ruflo palette lists them; ids look like spawn-coder, claim-release, worker-audit, route.` }
 
       await control.open()
+      // A lab read answers with what it printed, so `/ruflo run mh-genome` works headless.
+      if (state.pending === null) await control.runner.settled()
 
-      return { text: state.pending !== null ? `Asked: ${state.pending.label}. Confirm with /ruflo yes (or y in the pane), cancel with /ruflo no.` : (state.outcome?.label ?? 'done') }
+      if (state.pending !== null) {
+        const pending = state.pending
+
+        return { text: [`Asked: ${pending.label}. Confirm with /ruflo yes (or y in the pane), cancel with /ruflo no.`, ...(pending.shows === undefined ? [] : [`runs: ${pending.shows}`, pending.note ?? ''])].filter(Boolean).join('\n') }
+      }
+
+      return { text: (missionAnswer(state, intent.paletteId) ?? xruvAnswer(state, intent.paletteId, askedAtMs) ?? labAnswer(state, intent.paletteId, askedAtMs) ?? skillsAnswer(state, intent.paletteId, askedAtMs)) ?? (state.outcome !== null && !state.outcome.ok ? `${state.outcome.label}: ${state.outcome.detail}` : (state.outcome?.label ?? 'done')) }
     }
     case 'confirm':
       if (state.pending === null) return { text: 'Nothing is waiting for a confirm.' }
@@ -119,9 +139,11 @@ export async function dispatch(control: Controller, state: State, args: string, 
         return { text: 'Cancelled.' }
       }
 
+      const confirmedAtMs = Date.now()
+
       await control.runner.confirm()
 
-      return { text: state.outcome === null ? 'Ran.' : `${state.outcome.ok ? '✓' : '✗'} ${state.outcome.label}: ${state.outcome.detail}${state.outcome.verified === 'yes' ? ' (on disk)' : state.outcome.verified === 'no' ? ' (not on disk yet)' : ''}` }
+      return { text: xruvAnswer(state, null, confirmedAtMs) ?? labAnswer(state, null, confirmedAtMs) ?? (state.outcome === null ? 'Ran.' : `${state.outcome.ok ? '✓' : '✗'} ${state.outcome.label}: ${state.outcome.detail}${state.outcome.verified === 'yes' ? ' (on disk)' : state.outcome.verified === 'no' ? ' (not on disk yet)' : ''}`) }
     case 'agent': {
       const who = intent.who.toLowerCase()
       const agent = state.snapshot?.agents.find(entry => entry.id.toLowerCase() === who || entry.name?.toLowerCase() === who) ?? state.snapshot?.agents.find(entry => entry.id.toLowerCase().endsWith(who))

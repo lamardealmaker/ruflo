@@ -9,10 +9,33 @@ import type { Snapshot } from './data/snapshot'
 export type ActionSpec = {
   label: string
   args: readonly string[]
+  /** A fixed command outside ruflo, or an offline read, with optional JSON on stdin. */
+  argv?: readonly string[]
+  stdin?: string
   expect: string
   verify?: (snapshot: Snapshot) => boolean
   /** Reads only: runs at once, without the confirm step, and shows what the CLI printed. */
   isReadOnly?: boolean
+  /** Not a ruflo CLI call: what runs instead once confirmed (a terminal harness), reporting for itself. */
+  run?: () => Promise<void>
+  /** Where the ask came from in its view (`goal`, `controls`, `guide`): a view that draws its own confirm puts it under that field. */
+  scope?: string
+  /** The command line the confirm row shows when it is not `ruflo <args>`. */
+  shows?: string
+  /** A MetaHarness lab entry's id: the runner keeps what it printed for the lab's result panel. */
+  lab?: string
+  /** What a run costs or writes, in words: the confirm row and the result panel show it. */
+  note?: string
+  /** How long the CLI may take; 90 s when unset. */
+  timeoutMs?: number
+  /** The x.ruv.io board's result panel instead of the MetaHarness lab's, for a spec with a `lab` id. */
+  board?: 'xruv'
+  /** What the result panel shows of the output, when not the lab's reading of it. */
+  lines?: (stdout: string, stderr: string) => string[]
+  /** Called with what the CLI printed when the run succeeded: a board read fills its section from it. */
+  onOutput?: (stdout: string) => void
+  /** A lab entry that reads its own output: it may keep what it parsed, and answers the result panel's lines (masked where it must be). */
+  read?: (stdout: string, stderr: string, ok: boolean) => string[]
 }
 
 export const exec = (tool: string, params: Record<string, string>) => ['mcp', 'exec', '-t', tool, '-p', JSON.stringify(params)] as const

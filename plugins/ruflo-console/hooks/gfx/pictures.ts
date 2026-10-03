@@ -5,11 +5,16 @@
  * where it is not.
  */
 import { Braille, COLOR, Grid, mix, ramp, sparkline } from './raster'
+import { bigText } from './font'
+
+export { bootPicture, BOOT_ROWS } from './boot'
 
 export type TopoNode = { id: string; label: string; status: string; isLeader: boolean; /** When the console last saw an event about it. */ pulseAtMs?: number }
 export type TopoModel = { topology: string; nodes: TopoNode[] }
 
 export const PULSE_MS = 1_400
+/** How long a work-in-flight dot takes from the leader to a busy agent. */
+export const FLIGHT_MS = 1400
 const isBusy = (status: string) => /busy|active|running|working/i.test(status)
 const isDown = (status: string) => /stop|terminat|offline|dead|error|fail/i.test(status)
 
@@ -101,6 +106,21 @@ export function topologyPicture(model: TopoModel, columns: number, rows: number,
     if (p !== undefined && q !== undefined) canvas.line(p.x, p.y, q.x, q.y, COLOR.line)
   }
 
+  // Work in flight: while ruflo has an agent busy, a dim amber dot keeps travelling down its edge from the leader.
+  // It runs only for as long as the status says busy, so it is data, not decoration; each agent has its own phase.
+  model.nodes.forEach((node, i) => {
+    const q = points[i]
+
+    if (i === 0 || leader === undefined || q === undefined || !isBusy(node.status)) return
+
+    const k = (((t / FLIGHT_MS + i * 0.37) % 1) + 1) % 1
+    const x = leader.x + (q.x - leader.x) * k
+    const y = leader.y + (q.y - leader.y) * k
+
+    canvas.dot(x, y, COLOR.warn)
+    canvas.dot(x + 1, y, COLOR.warn)
+  })
+
   model.nodes.forEach((node, i) => {
     const q = points[i]
     const k = node.pulseAtMs === undefined ? -1 : (t - node.pulseAtMs) / PULSE_MS
@@ -128,9 +148,11 @@ export function topologyPicture(model: TopoModel, columns: number, rows: number,
     const cy = Math.floor(point.y / 4)
     const heartbeat = node.isLeader ? Math.max(0, Math.sin(t / 260)) ** 6 : 0
     const flash = node.pulseAtMs !== undefined && t - node.pulseAtMs >= 0 && t - node.pulseAtMs < PULSE_MS + 600
-    const color = flash ? 0xffffff : node.isLeader ? mix(COLOR.accent, 0xffffff, heartbeat) : nodeColor(node)
+    // A busy agent breathes (brighter and back, about once every 2 s) so it reads as working, not just coloured.
+    const breath = !node.isLeader && isBusy(node.status) ? 0.45 * Math.sin(t / 330 + i) ** 2 : 0
+    const color = flash ? 0xffffff : node.isLeader ? mix(COLOR.accent, 0xffffff, heartbeat) : mix(nodeColor(node), 0xffffff, breath)
 
-    grid.set(cx, cy, node.isLeader ? '★' : '●', color)
+    grid.set(cx, cy, node.isLeader ? '★' : isBusy(node.status) ? '◉' : '●', color)
 
     if (room >= 5 || node.isLeader) {
       const label = node.label.slice(0, Math.max(3, room - 1))
@@ -212,6 +234,89 @@ export function markPicture(isWorking: boolean, t: number): Grid {
 }
 
 /** The pane's title strip: a highlight sweeps across it every few seconds while the pane is focused. Decoration only. */
+/** RUFLO in a two-row half-block font, the way a BBS splash spelled its name. */
+const LOGO = ['█▀█ █ █ █▀▀ █   █▀█', '█▀▄ █▄█ █▀  █▄▄ █▄█'] as const
+const NEON_MAGENTA = 0xff2a6d
+const NEON_CYAN = 0x05d9e8
+
+/**
+ * The BBS banner: the logo in a magenta-to-cyan gradient with a scanline sweeping across it (decoration), a tag line,
+ * the project, and a blinking block cursor. Two rows.
+ */
+export function bannerPicture(project: string, columns: number, t: number): Grid {
+  const grid = new Grid(columns, 2)
+  const width = LOGO[0].length
+  const sweep = ((t / 28) % (columns + 40)) - 20
+
+  LOGO.forEach((line, y) => {
+    ;[...line].forEach((ch, x) => {
+      if (ch === ' ' || x >= columns) return
+
+      const base = mix(NEON_MAGENTA, NEON_CYAN, x / Math.max(1, width - 1))
+      const glow = Math.max(0, 1 - Math.abs(x - sweep) / 4)
+
+      grid.set(x, y, ch, mix(base, 0xffffff, glow * 0.7))
+    })
+  })
+
+  const x0 = width + 2
+
+  if (columns > x0 + 4) {
+    grid.text(x0, 0, '░▒▓ AGENT SWARM CONSOLE'.slice(0, columns - x0), NEON_MAGENTA)
+    const node = `▸ npx ruflo · ${project}`.slice(0, columns - x0 - 2)
+
+    grid.text(x0, 1, node, NEON_CYAN)
+    if (Math.floor(t / 530) % 2 === 0 && x0 + node.length + 1 < columns) grid.set(x0 + node.length + 1, 1, '█', NEON_CYAN)
+  }
+
+  return grid
+}
+
+const NEON_CORAL = 0xff7a59
+
+/**
+ * A view's BBS title: its name in the two-row half-block font, magenta to coral like the ANSI art boards, framed by
+ * dithered ░▒▓ ramps, with a slow shimmer down the letters (decoration). Two rows.
+ */
+export function titlePicture(name: string, columns: number, t: number): Grid {
+  const grid = new Grid(columns, 2)
+  const [top, bottom] = bigText(name)
+  const edge = '░▒▓'
+  const x0 = edge.length + 1
+  const width = Math.max(top.length, bottom.length)
+  const shimmer = ((t / 40) % (width + 30)) - 15
+  // `RUFLO | PAGE`: the RUFLO letters move like the banner on the menu (a white glow sweeping a magenta to cyan ramp); the page's name keeps its slower coral shimmer.
+  const logo = name.toLowerCase().startsWith('ruflo |') ? bigText('ruflo')[0].length : 0
+  const sweep = ((t / 28) % (logo + 40)) - 20
+
+  for (let y = 0; y < 2; y++) {
+    ;[...edge].forEach((ch, i) => grid.set(i, y, ch, mix(0x3a0f2e, NEON_MAGENTA, (i + 1) / edge.length)))
+    ;[...(y === 0 ? top : bottom)].forEach((ch, i) => {
+      if (ch === ' ' || x0 + i >= columns) return
+
+      if (i < logo) {
+        const lit = Math.max(0, 1 - Math.abs(i - sweep) / 4)
+
+        grid.set(x0 + i, y, ch, mix(mix(NEON_MAGENTA, NEON_CYAN, i / Math.max(1, logo - 1)), 0xffffff, lit * 0.7))
+
+        return
+      }
+
+      const glow = Math.max(0, 1 - Math.abs(i - shimmer) / 3)
+
+      grid.set(x0 + i, y, ch, mix(mix(NEON_MAGENTA, NEON_CORAL, i / Math.max(1, width - 1)), 0xffffff, glow * 0.6))
+    })
+    // The line closes on the ramp the other way round, ░▒▓, mirroring how the dark ▓▒░ edge opened it.
+    ;[...'░▒▓'].forEach((ch, i) => {
+      const x = x0 + width + 1 + i
+
+      if (x < columns) grid.set(x, y, ch, mix(0x3a0f2e, NEON_MAGENTA, (i + 1) / edge.length))
+    })
+  }
+
+  return grid
+}
+
 export function headerPicture(title: string, columns: number, t: number): Grid {
   const grid = new Grid(columns, 1)
   const at = ((t / 22) % (columns + 60)) - 20

@@ -1,14 +1,14 @@
 {
   "manifest": {
     "schema": "ruflo-witness/v1",
-    "issuedAt": "2026-10-02T05:08:47.885Z",
-    "gitCommit": "d582270956fe8a090fe40b8d2268579eb92b4710",
-    "branch": "release/3.51.0",
+    "issuedAt": "2026-10-02T15:54:52.583Z",
+    "gitCommit": "77a77a4527d543d19ed3f2af77f509b742326256",
+    "branch": "release/3.51.1",
     "os": "macos",
     "releases": {
-      "ruflo": "3.51.0",
-      "claude-flow": "3.51.0",
-      "@claude-flow/cli": "3.51.0",
+      "ruflo": "3.51.1",
+      "claude-flow": "3.51.1",
+      "@claude-flow/cli": "3.51.1",
       "@claude-flow/memory": "3.0.0"
     },
     "summary": {
@@ -117,7 +117,7 @@
         "id": "#1697",
         "desc": "rvf-wasm overrides",
         "file": "package.json",
-        "sha256": "a920904e1abe3e847ebb40c6da2459db16c103dd86e6997722919254040408c3",
+        "sha256": "822f264bdcf0f54b8bd9c8715b46780fd0aefbae4d370716c4e8a298fa6c18b7",
         "marker": "@ruvector/rvf-wasm",
         "markerVerified": true
       },
@@ -141,7 +141,7 @@
         "id": "#1721",
         "desc": "postinstall copies all dist/src/* siblings",
         "file": "v3/@claude-flow/cli/package.json",
-        "sha256": "337c591aad8e9398e5a81a55f33575674ca459c484751cb623b68c09794a372b",
+        "sha256": "308e9039e74bb3a39f9f477ae9b1c77173f13ccef0fb10da916e4e4fc64b26b3",
         "marker": "postinstall.cjs",
         "markerVerified": true
       },
@@ -461,7 +461,7 @@
         "id": "#1795",
         "desc": "umbrella package missing cli-core dep (ERR_MODULE_NOT_FOUND)",
         "file": "package.json",
-        "sha256": "a920904e1abe3e847ebb40c6da2459db16c103dd86e6997722919254040408c3",
+        "sha256": "822f264bdcf0f54b8bd9c8715b46780fd0aefbae4d370716c4e8a298fa6c18b7",
         "marker": "@claude-flow/cli-core",
         "markerVerified": true
       },
@@ -629,7 +629,7 @@
         "id": "#1825",
         "desc": "hotfix: workspace: protocol leak in cli optionalDependencies",
         "file": "v3/@claude-flow/cli/package.json",
-        "sha256": "337c591aad8e9398e5a81a55f33575674ca459c484751cb623b68c09794a372b",
+        "sha256": "308e9039e74bb3a39f9f477ae9b1c77173f13ccef0fb10da916e4e4fc64b26b3",
         "marker": "\"@claude-flow/memory\": \"3.",
         "markerVerified": true
       },
@@ -957,10 +957,10 @@
   },
   "integrity": {
     "manifestHashAlgo": "sha256",
-    "manifestHash": "dff70ae35974610bf6fe0da7498c04e368ddf4942039abde433cbcf711682b91",
+    "manifestHash": "54a4aa23737de376820176db7911185f45804f3c50679b2eaf388b241a5753ea",
     "signatureAlgo": "ed25519",
-    "publicKey": "d5a8471b29b8df196d7d0a0b1e7ed3643ed4333d0fc11f18f2ad2578c5ef7af2",
-    "signature": "7eca373671c650c1d9b9729b6bc6e1feb34047297a1e35f3f1ff589d49a1911e51505c97edfceb590b868332a1be1467b7ee3b7f63cf6d827526a094826f6004",
+    "publicKey": "34a497d77bd5a222d394e76a44bd43797ea239aecbb292f4f6ba6e0cac693a36",
+    "signature": "b8a7c71fef82d2f9255f056cf7a8ec669e45ebb32a203897ad0a2c8663399bbc12ac644e19717be8498f35a6619c34811b394ec05fe9339db525fb17c75ba00c",
     "seedDerivation": "sha256(gitCommit + ':ruflo-witness/v1')"
   }
 }
