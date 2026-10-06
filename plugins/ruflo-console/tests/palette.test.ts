@@ -3,7 +3,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import { HIVE_FILES, WORKERS } from './fixtures/hive'
 import { RUFLO_FILES } from './fixtures/ruflo-run'
 import { FIND_OUT } from './fixtures/skills'
-import { cliAnswer, command, elementsOf, keyOf, paneAt, PLUGIN, SESSION, textOf, worldOf } from './fixtures/world'
+import { cliAnswer, command, elementsOf, inputKeys, keyOf, paneAt, PLUGIN, SESSION, textOf, worldOf } from './fixtures/world'
 
 const runsOf = (runs: readonly string[][], word: string) => runs.filter(argv => argv.includes(word))
 
@@ -36,13 +36,13 @@ describe('palette and /ruflo', () => {
     const pane = await $.ui.mount({ ...paneAt(110), surface: 'terminal' as const, plugin: PLUGIN })
 
     await pane.press({ key: 'palette' })
-    expect(elementsOf(await pane.drawn(), 'Input').map(keyOf)).toEqual(['palette-input'])
+    expect(inputKeys(await pane.drawn())).toEqual(['palette-input'])
 
     await pane.input({ key: 'palette-input', text: 'spawn cod', kind: 'change' })
 
     const filtered = await pane.drawn()
 
-    expect(elementsOf(filtered, 'Button').map(keyOf).filter(key => key.startsWith('pal-'))[0]).toBe('pal-spawn-coder')
+    expect(elementsOf(filtered, 'Button').map(keyOf).filter(key => key.startsWith('pal-') && !key.startsWith('pal-kw-'))[0]).toBe('pal-spawn-coder')
 
     await pane.press({ key: 'pal-spawn-coder' })
     expect(textOf(await pane.drawn())).toMatch(/Confirm: spawn a coder agent named coder-\d+\?/)
@@ -142,6 +142,8 @@ describe('palette and /ruflo', () => {
 
     const pane = await $.ui.mount({ ...paneAt(110), plugin: PLUGIN })
 
+    expect(elementsOf(await pane.drawn(), 'Button').map(keyOf)).not.toContain('lab-mh-redblue-real')
+    await pane.press({ key: 'sec-mh-evolve' })
     await pane.press({ key: 'lab-mh-redblue-real' })
 
     const text = textOf(await pane.drawn())
@@ -154,13 +156,15 @@ describe('palette and /ruflo', () => {
     await pane.unmount()
   })
 
-  test('lab: promote is never run, not even with every lab button pressed and every ask confirmed', { options: { boot: false } }, async ($, on) => {
+  test('lab: promote is never run, not even with every lab button pressed and every ask confirmed', { options: { boot: false }, timeoutMs: 30_000 }, async ($, on) => {
     const world = worldOf(on, RUFLO_FILES)
     mock.clock(on)
     await $.session.start(SESSION)
     await $.command.run(command('metaharness'))
 
     const pane = await $.ui.mount({ ...paneAt(110), plugin: PLUGIN })
+    await pane.press({ key: 'sec-mh-record' })
+    await pane.press({ key: 'sec-mh-evolve' })
     const keys = elementsOf(await pane.drawn(), 'Button').map(keyOf).filter(key => key.startsWith('lab-mh-'))
 
     expect(keys.length).toBeGreaterThan(20)

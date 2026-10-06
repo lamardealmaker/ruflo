@@ -42,6 +42,35 @@ describe('register', () => {
     expect(JSON.parse(w.files.get(`${ROOT}/.claude-flow/mods/session.json`) ?? '{}').owned).toEqual(['route', 'post-edit'])
   })
 
+  test('a user-scoped mod does not inject routing or create state in an unrelated project; its guard stays active', async ($, on) => {
+    const w = world(on)
+    w.dirs.delete(`${ROOT}/.claude-flow`)
+    w.env.set('RUFLO_MODS_OWNS', 'route,post-edit')
+    let context: readonly string[] | undefined
+    on('prompt.submit', ($, e) => ((context = e.context), { text: e.text }))
+    on('tool.call', () => ({ result: 'edited' }))
+    on('turn.complete', ($, e) => ({ text: e.answer }))
+    on('tool.check', () => ({ decision: 'allow' }))
+
+    await $.session.start(START)
+    await $.prompt.submit(prompt('review this code'))
+    await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/a.ts`, old_string: 'a', new_string: 'b' })
+    await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+
+    expect(context).toBeUndefined()
+    expect(w.env.has('RUFLO_MODS_OWNS')).toBe(false)
+    expect(w.files.size).toBe(0)
+    expect((await $.tool.check({ tool: 'Bash', input: { command: 'rm -rf /' } })).decision).toBe('deny')
+  })
+
+  test('a file named .claude-flow does not enable project event ownership or a heartbeat', async ($, on) => {
+    const w = world(on, {}, { [`${ROOT}/.claude-flow`]: 'not a directory' })
+    await $.session.start(START)
+
+    expect(w.env.has('RUFLO_MODS_OWNS')).toBe(false)
+    expect(w.files.size).toBe(1)
+  })
+
   test('stands down where a classic helper too old for the handshake runs route', async ($, on) => {
     const w = world(on, CLASSIC_ROUTE, { [HELPER]: '// an older helper' })
     let context: readonly string[] | undefined
@@ -103,6 +132,33 @@ describe('register', () => {
 
     w.files.set(`${ROOT}/.claude-flow/policy/claude-code.json`, '{ torn')
     expect((await $.tool.check({ tool: 'Read', input: { file_path: 'a.ts' } })).decision).toBe('ask')
+  })
+
+  test('tool.check: a legacy or unknown-mode projection is unreadable, so the call asks; the report names the state (ADR-450 T10)', async ($, on) => {
+    const PATH = `${ROOT}/.claude-flow/policy/claude-code.json`
+    const rule = { id: 'no-push', effect: 'deny', actions: ['claude-code.tool.Bash'], resources: ['git push*'] }
+    const mk = (mode: unknown) => JSON.stringify({ version: 1, mode, rules: [rule] })
+    const w = world(on, {}, { [PATH]: mk('enforce') })
+    on('tool.check', () => ({ decision: 'allow' }))
+    on('command.run', () => ({ text: 'core' }))
+    await $.session.start(START)
+    const read = { tool: 'Read', input: { file_path: 'a.ts' } }
+    const report = async () => ((await $.command.run({ command: 'ruflo-mods', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })).text ?? '')
+
+    expect((await $.tool.check(read)).decision).toBe('allow')
+    expect(await report()).toContain('policy:      enforce (projection read)')
+
+    for (const bad of ['legacy', 'LEGACY', 'off', '', null, 7, ['enforce'], {}]) {
+      w.files.set(PATH, mk(bad))
+      const out = await $.tool.check(read)
+      expect(out.decision).toBe('ask')
+      expect(out.reason).toContain('unreadable')
+      expect(await report()).toContain('policy:      unreadable')
+    }
+
+    w.files.set(PATH, mk('observe'))
+    expect((await $.tool.check(read)).decision).toBe('allow')
+    expect(await report()).toContain('policy:      observe (projection read)')
   })
 
   test('records a finished edit once per turn, in the classic pending-insights format', async ($, on) => {

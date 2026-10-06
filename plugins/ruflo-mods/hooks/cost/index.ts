@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 
 import type { ModOptions } from '../options'
 import { redraw, type ModState } from '../state'
-import { alertLevel, isRaised } from './budget'
+import { alertLevel, isRaised, type BudgetLevel } from './budget'
 
 /**
  * ruflo-cost-tracker's budget ladder on the session's live cost:
@@ -15,6 +15,7 @@ export function registerCost(on: On, state: ModState, options: ModOptions) {
   const limit = options.costBudgetUsd
   if (limit === undefined) return
   state.budget = { level: 'OK', limit }
+  let announced: BudgetLevel = 'OK' // the highest rung told; a fall and a second rise stay quiet
 
   on('session.measure', async ($, e, next) => {
     const result = await next(e)
@@ -22,8 +23,10 @@ export function registerCost(on: On, state: ModState, options: ModOptions) {
     if (typeof usd !== 'number' || !Number.isFinite(usd) || usd < 0) return result
 
     const level = alertLevel(usd / limit)
-    const raised = isRaised(state.budget.level, level)
+    const raised = isRaised(announced, level)
+    if (raised) announced = level
     state.budget = { level, usd, limit }
+    if (isRaised(state.rollup.rung, level)) state.rollup.rung = level // the session rollup keeps the highest rung reached
     if (raised) {
       try {
         $.ui.toast(`ruflo budget ${level}: $${usd.toFixed(2)} of $${limit.toFixed(2)} this session`)

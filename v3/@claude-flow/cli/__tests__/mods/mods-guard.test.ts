@@ -3,16 +3,19 @@
  * every chain verdict, the fail-closed paths, ruflo policy modes, and parity
  * with the real policy evaluator and hook-handler.cjs pre-bash list.
  */
-import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { ruleMatches as engineRuleMatches, type PolicyRule, type PolicyRequest } from '@claude-flow/security';
 
 import { register } from '../../../../../plugins/ruflo-mods/hooks/register';
-import { DANGEROUS_COMMANDS } from '../../../../../plugins/ruflo-mods/hooks/guard/dangerous-command';
+import { DANGEROUS_COMMANDS, dangerousCommandVerdict } from '../../../../../plugins/ruflo-mods/hooks/guard/dangerous-command';
 import { parseProjection, ruleMatches, toolRequest, type ProjectedRule } from '../../../../../plugins/ruflo-mods/hooks/guard/policy';
 import { stricter } from '../../../../../plugins/ruflo-mods/hooks/guard/verdict';
 import { loadMod, memoryWorld, type World } from './harness';
+import { generateHookHandler } from '../../src/init/helpers-generator';
 
 const HELPERS = join(resolve(__dirname, '../..'), '.claude', 'helpers');
 const PROJECTION = '/work/.claude-flow/policy/claude-code.json';
@@ -197,5 +200,118 @@ describe('ADR-404 parity', () => {
       }
     }
     expect(compared).toBeGreaterThan(10_000);
+  });
+});
+
+describe('#3698 root deletion guard parity', () => {
+  let project: string;
+  let fallback: string;
+  const helpers = [
+    join(HELPERS, 'hook-handler.cjs'),
+    resolve(HELPERS, '../../../../../.claude/helpers/hook-handler.cjs'),
+  ];
+  beforeAll(() => {
+    project = mkdtempSync(join(tmpdir(), 'ruflo-root-guard-'));
+    fallback = join(project, 'hook-handler.cjs');
+    writeFileSync(fallback, generateHookHandler());
+  });
+  afterAll(() => rmSync(project, { recursive: true, force: true }));
+
+  // Only hook helpers run. These command strings are inert stdin JSON data.
+  const cases: Array<[string, boolean]> = [
+    ['rm -rf /tmp/ruflo-test', false],
+    ['rm -rf /var/tmp/ruflo-test', false],
+    ['sudo RM -RF /tmp/ruflo-test', false],
+    ['rm -rf "/tmp/ruflo test"', false],
+    ["rm -rf '/tmp/ruflo-test'", false],
+    ['rm -rf /tmp/*', false],
+    ['rm -rf /tmp/""', false],
+    ["rm -rf /tmp/''", false],
+    ['rm -rf "/tmp"/"ruflo test"', false],
+    ['rm -rf /tmp/scratch/../test', false],
+    ['rm -rf "/tmp;folder"', false],
+    ['rm -rf /tmp/ruflo-test; printf /', false],
+    ['rm -rf /tmp/ruflo-test && printf /', false],
+    ['rm -rf /tmp/ruflo-test & printf /', false],
+    ['rm -rf /tmp 2>&1 & printf /', false],
+    ['rm -rf /tmp 2>&1 && printf /', false],
+    ['rm -rf /tmp &>/dev/null && printf /', false],
+    ['rm -rf /tmp > /tmp/log & printf /', false],
+    ['rm -rf /tmp \\> & printf /', false],
+    ['rm -rf /tmp/ruflo-test\nprintf /', false],
+    ['rm -rf ./temporary', false],
+    ['rm -rf /tmp/ruflo-test # ignored /', false],
+    ['sh -c "rm -rf /tmp/ruflo-test"', false],
+    ['rm -rf /', true],
+    ['rm -rf /"" --no-preserve-root', true],
+    ["rm -rf /'' --no-preserve-root", true],
+    ['rm -rf /""*', true],
+    ["rm -rf /''*", true],
+    ['rm -rf ""/""', true],
+    ["rm -rf ''/''", true],
+    ['rm -rf "/""/"', true],
+    ["rm -rf '/'\"\"'/'", true],
+    ['rm -rf /\\\n --no-preserve-root', true],
+    ['rm -rf /\\\n*', true],
+    ['rm -rf "/\\\n"*', true],
+    ['rm -rf /tmp/../ --no-preserve-root', true],
+    ['rm -rf /tmp/../*', true],
+    ['rm -rf /tmp/nested/../../', true],
+    ['rm -rf "/tmp"/../*', true],
+    ['rm -rf /tmp/../""*', true],
+    ['rm -rf /tmp > /tmp/log /', true],
+    ['rm -rf /tmp 2>&1 / --no-preserve-root', true],
+    ['rm -rf /tmp &>/dev/null / --no-preserve-root', true],
+    ['rm -rf /tmp 1>/tmp/log 2>&1 / --no-preserve-root', true],
+    ['rm -rf /tmp &>>/dev/null / --no-preserve-root', true],
+    ['rm -rf /tmp 0<&0 / --no-preserve-root', true],
+    ['rm -rf "/tmp;folder" /', true],
+    ['sh -c "rm -rf /"', true],
+    ["sh -c 'rm -rf /'", true],
+    ["sh -c \"echo 'rm -rf /tmp'; rm -rf /\"", true],
+    ['sudo RM -RF / --no-preserve-root', true],
+    ['/bin/rm -rf /', true],
+    ['rm -rf --no-preserve-root /', true],
+    ['rm -rf /tmp/ruflo-test /', true],
+    ['rm -rf /tmp/ruflo-test; rm -rf /', true],
+    ['rm -rf //', true],
+    ['rm -rf /./', true],
+    ['rm -rf /../', true],
+    ['rm -rf "/"', true],
+    ["rm -rf '/'", true],
+    ['rm -fr /', true],
+    ['rm -r -f /', true],
+    ['rm --recursive --force /', true],
+    ['rm -rf /*', true],
+    ['rm -rf /.*', true],
+    ['rm -rf /**', true],
+    ['rm -rf /[a-z]*', true],
+    ['rm -rf /;printf ok', true],
+    ['rm -rf /&&printf ok', true],
+    ['rm -rf /||printf ok', true],
+    ['rm -rf /|cat', true],
+    ['(rm -rf /)', true],
+    ['rm -rf /\nprintf ok', true],
+    ['format c: /q /y', true],
+    ['del /s /q c:\\', true],
+    [':(){:|:&};:', true],
+  ];
+  function expectParity(command: string, denied: boolean) {
+    expect(dangerousCommandVerdict('Bash', { command })?.decision === 'deny').toBe(denied);
+    for (const helper of [...helpers, fallback]) {
+      const result = spawnSync(process.execPath, [helper, 'pre-bash'], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+        cwd: project, encoding: 'utf8', timeout: 10_000,
+        env: { PATH: process.env.PATH, HOME: project, CI: '1', RUFLO_MODS_OWNS: 'route,post-edit,pre-bash' },
+      });
+      expect(result.error, helper).toBeUndefined();
+      expect(result.status, `${helper}: ${result.stderr}`).toBe(denied ? 2 : 0);
+      expect(denied ? result.stderr : result.stdout).toContain(denied ? '[BLOCKED]' : '[OK] Command validated');
+    }
+  }
+  it.each(cases)('%j: denied=%s in mod, shipped helpers and fallback', expectParity);
+
+  it('scans a 60 KB safe cleanup input without losing classic/fallback parity', () => {
+    expectParity('rm -rf /tmp '.repeat(5000), false);
   });
 });

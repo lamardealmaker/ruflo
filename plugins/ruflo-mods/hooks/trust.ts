@@ -29,6 +29,7 @@ const RISKY_CALLS: Record<string, string> = {
   'http.fetch': 'makes network requests',
   'env.set': 'changes the environment of later hooks and tools',
   'fs.write': 'writes files (settings, hooks, helpers included)',
+  'agent.spawn': 'starts agents with a prompt of its own',
 }
 
 /** Hooks that decide for, or over, everything else. */
@@ -39,6 +40,8 @@ const RISKY_EVENTS: Record<string, string> = {
   'classic.*': 'can answer every settings hook',
   'plugin.register': 'can refuse other mods',
   'prompt.compose': 'can rewrite the system prompt',
+  'prompt.submit': 'can add to or rewrite every prompt you send',
+  'agent.spawn': 'can rewrite or answer every agent spawn',
 }
 
 const isStrings = (v: unknown): v is readonly string[] => Array.isArray(v) && v.every(s => typeof s === 'string')

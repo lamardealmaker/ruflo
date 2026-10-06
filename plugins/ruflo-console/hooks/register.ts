@@ -10,6 +10,15 @@ import type { Host } from './host'
 import { ownerLine, ownerOf } from './tool-owner'
 import { newState, PANE_ID, restore, restoreSessions, storeKeyOf, termStoreKeyOf } from './state'
 import { BAR_KEY, barView } from './views/bar'
+import { addNotice, dismissNotices } from './notices'
+import { setBootChecks } from './boot-checks'
+import { buildOf, isOurCheckout, setBuild } from './build'
+import { runUpdateCheck } from './update-flow'
+import { announceModelTools, confirmOf, levelOf, lowerOnly, parseControlEnv, serveModelTools } from './model-tools'
+import { loadAiPrefs, settingsOf } from './settings'
+import { contextSection, onPromptSubmit, onTurnComplete } from './mission-claude'
+import { parseMode, RECHECK_EVERY_MS, UPDATES_KEY } from './updates'
+import { selfCheckResults } from './self-check'
 import type { Kit } from './views/common'
 import { picturesOf } from './views/frames'
 import { withClearing } from './views/clearing'
@@ -21,6 +30,9 @@ const RUFLO_TOOL = /^mcp__(claude-flow|ruflo|plugin_ruflo[\w-]*)__/
  * Binds a Host from `$`, every member spelled `$.noun.method(...)` here and nowhere else, so the engine reads what
  * the module calls off this one place. Calls that answer nothing are wrapped: a refused draw is not a crashed hook.
  */
+/** True while the console itself scrolls the pane to its top, so the terminal's own wheel handling does not take that for the person's wheel. */
+let isResettingScroll = false
+
 function hostOf($: EngineInterface, cwd: string): Host {
   const rooted = (path: string) => (path.startsWith('/') ? path : `${cwd.replace(/\/+$/, '')}/${path}`)
   const quietly = (fn: () => unknown) => {
@@ -39,7 +51,28 @@ function hostOf($: EngineInterface, cwd: string): Host {
     after: (ms, fn) => $.clock.after(ms, fn),
     storeGet: async key => $.store.get(key),
     storeSet: async (key, value) => $.store.set(key, value as never),
+    fetchText: async url => {
+      const response = await $.http.fetch(url)
+
+      return { ok: response.ok, status: response.status, text: response.text }
+    },
+    askChoice: async (question, options) => $.ui.ask(question, options),
+    toast: (text, timeoutMs) => quietly(() => $.ui.toast(text, timeoutMs === undefined ? undefined : { timeoutMs })),
     invalidate: () => quietly(() => $.ui.invalidate('ui.render')),
+    // Once now and once after the new page has drawn: a page taller than the one before keeps the old offset until it is moved.
+    scrollTop: () => {
+      const go = () =>
+        quietly(() => {
+          isResettingScroll = true
+
+          return Promise.resolve($.ui.scroll({ to: 'start', in: PANE_ID })).finally(() => {
+            isResettingScroll = false
+          })
+        })
+
+      go()
+      $.clock.after(80, go)
+    },
     focus: async (paneId, key) => $.ui.focus({ requestId: paneId, key }),
     blit: args => quietly(() => $.ui.blit(args)),
     openPane: async pane => $.ui.open(pane),
@@ -79,6 +112,17 @@ function hostOf($: EngineInterface, cwd: string): Host {
         $.clock.after(1, () => void $.command.run({ command, args }).then(resolve, reject))
       }),
     listCommands: async () => (await $.command.list()).map(command => command.name),
+    // ADR-465. A tool call waits on the turn like submitPrompt, so it starts from a clock tick, never inside the hook that asked.
+    toolCall: input =>
+      new Promise((resolve, reject) => {
+        $.clock.after(1, () => void $.tool.call(input as never).then(reply => resolve(reply as never), reject))
+      }),
+    toolCheck: async (tool, input) => $.tool.check({ tool, input }),
+    httpSend: async (url, init) => {
+      const response = await $.http.fetch(url, init)
+
+      return { ok: response.ok, status: response.status, text: response.text }
+    },
   }
 }
 
@@ -88,16 +132,60 @@ function hostOf($: EngineInterface, cwd: string): Host {
  * drill-down, timeline, approvals, events). Every change goes through the ruflo CLI with fixed argv after a confirm.
  */
 export const register: Register = (on, raw: PluginOptions) => {
+  // The boot log reports this check, so an [ OK ] on screen means the area's commands resolved. It spawns nothing and takes a
+  // moment; a failure of the check itself leaves the log drawing as it did, never stops the console.
+  try {
+    setBootChecks(selfCheckResults())
+  } catch {
+    setBootChecks(undefined)
+  }
+
   const state = newState(raw)
   let host: Host | null = null
   let control: Controller | null = null
+
+  // Claude's console tools (ADR-444): answered only for their own names, and only when the person's setting lets them exist.
+  serveModelTools(on, () => (control === null ? null : { state, control }))
 
   on('session.start', async ($, e, next) => {
     control?.stop()
     host = hostOf($, e.cwd)
     state.cwd = e.cwd
+    state.nostrKeyVerifiedAtMs = null
     state.isInteractive = e.isInteractive !== false
     control = createController(state, host)
+
+    // Which build is this? Only a checkout of this plugin in its repository is read (an installed copy inside some other repo is not
+    // that repo's commit); read-only, $0, and any failure leaves the header at its version alone.
+    const here = host
+    const root = here.pluginRoot
+
+    const built = here
+      .run(['git', '-C', root, 'rev-parse', '--show-prefix'], 3_000)
+      .then(prefix => (prefix.exitCode === 0 && isOurCheckout(prefix.stdout) ? here.run(['git', '-C', root, 'describe', '--always', '--dirty', '--abbrev=7'], 3_000) : null))
+      .then(described => {
+        setBuild(described !== null && described.exitCode === 0 ? buildOf(described.stdout) : '')
+        here.invalidate()
+      })
+      .catch(() => undefined)
+
+    // The update mode is the person's, kept in the plugin's store; then, once the build is known (a development checkout is never offered
+    // an update) and the screen has settled, one check for a newer published version. It never throws and never blocks the console.
+    const moded = here.storeGet(UPDATES_KEY).then(
+      value => {
+        state.updates = parseMode(value)
+        here.invalidate()
+      },
+      () => undefined,
+    )
+
+    void Promise.all([built, moded]).then(() => {
+      if (!state.isInteractive) return
+
+      here.after(2_500, () => void runUpdateCheck(state, here))
+      // A session left open for days re-asks too, quietly (no dialog mid-work); the daily gate keeps the network to once a day.
+      state.timers.set('update-recheck', here.every(RECHECK_EVERY_MS, () => void runUpdateCheck(state, here, { quiet: true })))
+    })
 
     const bound = host
 
@@ -129,6 +217,18 @@ export const register: Register = (on, raw: PluginOptions) => {
     control.start()
     await control.refresh()
     control.autoOpen()
+
+    // Declare the console tools to the model when control is on: the saved setting, or this session's RUFLO_CONSOLE_CONTROL=<level>:<ask|auto>, which can only lower it.
+    await loadAiPrefs(state, bound).catch(() => undefined)
+
+    const forced = parseControlEnv(await (async () => $.env.get('RUFLO_CONSOLE_CONTROL'))().catch(() => undefined))
+
+    // The override may only lower what the person saved (ADR-450 T12): a project's settings env must not raise Claude's control.
+    const ai = settingsOf(state).ai
+    const effective = lowerOnly({ level: levelOf(ai.modelControl), confirm: confirmOf(ai.modelConfirm) }, forced)
+
+    Object.assign(ai, { modelControl: effective.level, modelConfirm: effective.confirm })
+    await announceModelTools(tool => $.tool.register(tool), state).catch(() => 0)
 
     return next(e)
   })
@@ -207,7 +307,7 @@ export const register: Register = (on, raw: PluginOptions) => {
   // The AI terminal's conversation is its own window: the wheel and the page keys over the pane move it, so the header,
   // tabs and the field below stay where they are (the engine would scroll the whole pane).
   on('ui.scroll', { component: 'Pane', requestId: PANE_ID }, ($, e, next) => {
-    if (control === null || state.view !== 'terminal' || e.by === 0) return next(e)
+    if (control === null || state.view !== 'terminal' || e.by === 0 || isResettingScroll) return next(e)
 
     const lines = Math.abs(e.by) >= e.bodyRows ? Math.max(1, Math.round(e.bodyRows / 2)) : Math.abs(e.by) * 3
 
@@ -218,7 +318,8 @@ export const register: Register = (on, raw: PluginOptions) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {
-    const show = state.options.bar === 'on' || (state.options.bar === 'auto' && state.snapshot?.isRufloProject === true)
+    const mode = state.bandMode ?? state.options.bar
+    const show = mode === 'on' || (mode === 'auto' && state.snapshot?.isRufloProject === true)
 
     if (control === null || e.props.hasSurvey || !show) {
       return next(e)
@@ -238,6 +339,13 @@ export const register: Register = (on, raw: PluginOptions) => {
     return barView(table, state, Math.floor(Number(e.props.bodyColumns) || 80), mark, () => void bound.open(false), view => {
       bound.setView(view)
       void bound.open(true)
+    }, () => {
+      dismissNotices(state)
+      try {
+        $.ui.invalidate('ui.render')
+      } catch {
+        // A refused redraw leaves the notice showing until the next one.
+      }
     })
   })
 
@@ -255,6 +363,10 @@ export const register: Register = (on, raw: PluginOptions) => {
 
   /** The band's mark pulses during a turn: a redraw at its start, and the loop stopped at its end, whatever redraws. */
   on('turn.start', ($, e, next) => {
+    // A new turn: the per-turn cap on Claude's console actions starts over.
+    state.control.turnCalls = 0
+    if (e.agentId === undefined) state.turnStartedMs = Date.now()
+
     try {
       $.ui.invalidate('ui.render')
     } catch {
@@ -265,7 +377,42 @@ export const register: Register = (on, raw: PluginOptions) => {
   })
 
   on('turn.complete', ($, e, next) => {
+    if (e.agentId === undefined && state.turnStartedMs !== null) {
+      // A long turn that ends while nobody watches is worth saying: the band announces it (a short one is not news).
+      const took = Date.now() - state.turnStartedMs
+
+      if (took >= 30_000) addNotice(state, { level: 'ok', text: `✓ Claude finished a turn · ${took < 60_000 ? `${Math.round(took / 1000)}s` : `${Math.floor(took / 60_000)}m ${Math.round((took % 60_000) / 1000)}s`}`, key: 'turn-done' })
+    }
+    if (e.agentId === undefined) state.turnStartedMs = null
     if (e.agentId === undefined) control?.markFrame('', false)
+    if (e.agentId === undefined && host !== null) {
+      try {
+        onTurnComplete(state, host, e.reason)
+      } catch {
+        // A note that could not be recorded never changes the turn.
+      }
+    }
+
+    return next(e)
+  })
+
+  // The mission Claude is working on rides in the system prompt (ADR-443); the text changes only when the task does.
+  on('prompt.compose', async ($, e, next) => {
+    const result = await next(e)
+    const section = contextSection(state)
+
+    return section === null ? result : { sections: [...result.sections, section] }
+  })
+
+  // A prompt carrying a mission's loop marker is that loop's tick.
+  on('prompt.submit', ($, e, next) => {
+    if (host !== null) {
+      try {
+        onPromptSubmit(state, host, e.text)
+      } catch {
+        // Counting a tick never blocks the prompt.
+      }
+    }
 
     return next(e)
   })

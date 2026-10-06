@@ -3,8 +3,10 @@
  * closed or hidden console reads nothing; anything that reaches the network or writes waits for a click.
  */
 import { loadEvolve } from './evolve'
+import { refreshWorkflows } from './wf-live'
 import type { Host } from './host'
 import { loadCatalog } from './plugin-catalog'
+import { probeTmux } from './sandbox'
 import { loadAiPrefs, loadCore, loadPlugin, settingsOf } from './settings'
 import { CLI_PREFIXES, type State } from './state'
 
@@ -17,6 +19,12 @@ export function openLoaders(state: State, host: Host, view: State['view']): void
 
   // Self-Evolution reads ruflo's own flywheel files (local, no CLI run); its checks wait for a click.
   if (view === 'evolve') void loadEvolve(state, host)
+
+  // Workflows reads Claude Code's run folders (local, read-only) when opened, and again on each refresh while it stays open.
+  if (view === 'workflows') void refreshWorkflows(state, host, true)
+
+  // The Sandbox page asks whether tmux is here (local, $0): without it the tmux rows say n/a.
+  if (view === 'sandbox') void probeTmux(state, host)
 
   // The catalog is read from the marketplace clone on disk: local, so opening it is enough.
   if (view === 'market') loadCatalog(state, host)

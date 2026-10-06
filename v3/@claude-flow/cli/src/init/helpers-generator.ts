@@ -441,6 +441,76 @@ module.exports = commands;
 `;
 }
 
+// Literal-word root guard mirrored in the mod and both shipped classic helpers.
+const ROOT_DELETE_CHECK_SOURCE = String.raw`function hasRootDelete(command, depth = 0) {
+  let word = '', quote = '', started = false, redirect = false
+  let inRm = false, optionsEnded = false, recursive = false, force = false, root = false
+  const isRoot = (operand) => {
+    if (!operand.startsWith('/')) return false
+    const parts = []
+    for (const part of operand.split('/')) {
+      if (!part || part === '.') continue
+      if (part === '..') parts.pop()
+      else parts.push(part)
+    }
+    return parts.length === 0 || /[*?\[]/.test(parts[0])
+  }
+  const finishWord = () => {
+    if (!started) return false
+    // Literal shell strings (e.g. sh -c 'rm -rf /') also carried the old guard.
+    // Bound rescanning to four levels; beyond that retain its conservative check.
+    if (word.includes('rm') && /[\s;&|()]/.test(word)) {
+      if (depth < 4 ? hasRootDelete(word, depth + 1) : word.includes('rm -rf /')) return true
+    }
+    if (!inRm) inRm = word === 'rm' || word.endsWith('/rm')
+    else if (!optionsEnded && word === '--') optionsEnded = true
+    else if (!optionsEnded && word.startsWith('-')) {
+      recursive = recursive || word === '--recursive' || /^-[a-z]*r[a-z]*$/.test(word)
+      force = force || word === '--force' || /^-[a-z]*f[a-z]*$/.test(word)
+    } else root = root || isRoot(word)
+    word = ''; started = false
+    return inRm && recursive && force && root
+  }
+  const finishCommand = () => {
+    const denied = inRm && recursive && force && root
+    inRm = optionsEnded = recursive = force = root = false
+    return denied
+  }
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]
+    const redirectionAmpersand = char === '&' && (redirect || command[i + 1] === '>')
+    redirect = false
+    if (quote) {
+      if (char === quote) quote = ''
+      else if (quote === '"' && char === '\\' && i + 1 < command.length &&
+        (command[i + 1] === '"' || command[i + 1] === '\\' || command[i + 1] === '$' ||
+          command.charCodeAt(i + 1) === 96 || command[i + 1] === '\n')) {
+        const next = command[++i]
+        if (next !== '\n') word += next
+      } else word += char
+      continue
+    }
+    if (char === '\\' && i + 1 < command.length) {
+      const next = command[++i]
+      if (next !== '\n') { word += next; started = true }
+    } else if (char === '"' || char === "'") {
+      quote = char; started = true
+    } else if (char === '#' && !started) {
+      while (i < command.length && command[i] !== '\n') i++
+      if (finishCommand()) return true
+    } else if (char === ' ' || char === '\t' || char === '\r' || char === '\n' ||
+      ';|&()<>'.includes(char)) {
+      if (finishWord()) return true
+      // Redirections separate words, but later operands still belong to rm.
+      redirect = char === '<' || char === '>'
+      if (!redirectionAmpersand && (char === '\n' || ';|&()'.includes(char)) && finishCommand()) return true
+    } else {
+      word += char; started = true
+    }
+  }
+  return finishWord() || finishCommand()
+}`;
+
 /**
  * Generate hook-handler.cjs (cross-platform hook dispatcher)
  * This is the inline fallback when file copy from the package fails.
@@ -577,13 +647,14 @@ export function generateHookHandler(): string {
     '    }',
     '    if (router && router.routeTask) {',
     '      const result = router.routeTask(prompt);',
+    "      const row = (text) => '| ' + text.substring(0, 60).padEnd(60) + ' |';",
     '      var output = [];',
     "      output.push('[INFO] Routing task: ' + (prompt.substring(0, 80) || '(no prompt)'));",
     "      output.push('');",
     "      output.push('+------------------- Primary Recommendation -------------------+');",
-    "      output.push('| Agent: ' + result.agent.padEnd(53) + '|');",
-    "      output.push('| Confidence: ' + (result.confidence * 100).toFixed(1) + '%' + ' '.repeat(44) + '|');",
-    "      output.push('| Reason: ' + result.reason.substring(0, 53).padEnd(53) + '|');",
+    "      output.push(row('Agent: ' + result.agent));",
+    "      output.push(row('Confidence: ' + (result.confidence * 100).toFixed(1) + '%'));",
+    "      output.push(row('Reason: ' + (result.reason || '')));",
     "      output.push('+--------------------------------------------------------------+');",
     "      console.log(output.join('\\n'));",
     '    } else {',
@@ -645,8 +716,9 @@ export function generateHookHandler(): string {
     "  'pre-bash': () => {",
     "    var cmd = String(hookInput.command || toolInputObj.command || prompt || '').toLowerCase();",
     "    var dangerous = ['rm -rf /', 'format c:', 'del /s /q c:\\\\', ':(){:|:&};:'];",
+    ROOT_DELETE_CHECK_SOURCE.split('\n').map((line) => '    ' + line).join('\n'),
     '    for (var i = 0; i < dangerous.length; i++) {',
-    '      if (cmd.includes(dangerous[i])) {',
+    "      if (dangerous[i] === 'rm -rf /' ? hasRootDelete(cmd) : cmd.includes(dangerous[i])) {",
     "        console.error('[BLOCKED] Dangerous command detected: ' + dangerous[i]);",
     '        // Claude Code PreToolUse: exit 2 blocks execution; exit 1 is non-blocking.',
     '        process.exit(2);',

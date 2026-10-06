@@ -5,14 +5,16 @@
  */
 import type { ActionSpec } from './actions'
 import { rememberKey } from './remember'
+import { record } from './data/events'
 import { plain } from './data/parse'
 import type { Host } from './host'
 import { labLines } from './mh-lab'
 import { outputLines } from './ops'
 import { filterPalette, paletteEntries, textOfQuery, type PaletteEntry } from './palette'
 import { CLI_PREFIXES, type State } from './state'
+import { prettyLines } from './result-lines'
 
-const PENDING_TTL_MS = 30_000
+export const PENDING_TTL_MS = 30_000
 
 export type RunnerDeps = {
   /** A read of the disk that starts after this call. */
@@ -27,14 +29,18 @@ export type Runner = {
   confirm: () => Promise<void>
   cancel: () => void
   runEntry: (entry: PaletteEntry, text: string) => void
-  runById: (id: string, text: string) => boolean
+  /** `exact` (the model path, ADR-450 T13) resolves the id as written and never falls back to fuzzy matching. */
+  runById: (id: string, text: string, options?: { exact?: boolean }) => boolean
   /** Resolves when the read started last has finished: `/ruflo run` waits on it to answer with what it printed. */
   settled: () => Promise<void>
+  /** Resolves when the last action that brought its own `run` (and is not awaited by `confirm`) has finished: the model tools wait on it, with a limit. */
+  finished: () => Promise<void>
 }
 
 export function createRunner(state: State, host: Host, deps: RunnerDeps): Runner {
   let pendingSpec: ActionSpec | null = null
   let inflight: Promise<void> = Promise.resolve()
+  let background: Promise<void> = Promise.resolve()
 
   const say = (label: string, ok: boolean, detail: string, lines?: string[]) => {
     state.outcome = { label, ok, verified: 'n/a', detail, atMs: Date.now(), ...(lines !== undefined && { lines }) }
@@ -45,6 +51,8 @@ export function createRunner(state: State, host: Host, deps: RunnerDeps): Runner
     // A harness run reports into the terminal and may take minutes: it does not hold the other buttons.
     if (spec.run !== undefined) {
       const running = spec.run()
+
+      background = running.then(() => undefined, () => undefined)
 
       // A read that runs its own command (a skills search) is waited on, so `/ruflo run` answers with what it found.
       if (spec.isReadOnly === true) await running
@@ -68,7 +76,7 @@ export function createRunner(state: State, host: Host, deps: RunnerDeps): Runner
 
       // A lab run's output goes to the lab's result panel, scrolled from its top; the footer keeps the one-line outcome.
       if (spec.lab !== undefined) {
-        panel.result = { id: spec.lab, label: spec.label, ok, exitCode: result.exitCode, ...(spec.note !== undefined && { note: spec.note }), lines: spec.read?.(result.stdout, result.stderr, ok) ?? (spec.lines ?? ((out, err) => labLines(spec.lab ?? '', out, err)))(result.stdout, result.stderr), atMs: Date.now() }
+        panel.result = { id: spec.lab, label: spec.label, ok, exitCode: result.exitCode, ...(spec.note !== undefined && { note: spec.note }), lines: prettyLines(spec.read?.(result.stdout, result.stderr, ok) ?? (spec.lines ?? ((out, err) => labLines(spec.lab ?? '', out, err)))(result.stdout, result.stderr)), atMs: Date.now() }
         state.select.item = 0
       }
       // Keyed on the exit, not on `ok`: relay text in a read may carry an "error" key of its own.
@@ -82,7 +90,9 @@ export function createRunner(state: State, host: Host, deps: RunnerDeps): Runner
 
       await deps.freshRead()
 
-      const verified = spec.verify === undefined || state.snapshot === null ? 'n/a' : spec.verify(state.snapshot) ? 'yes' : 'no'
+      const verified = spec.verifyLocal !== undefined
+        ? ok && await spec.verifyLocal(host) ? 'yes' : 'no'
+        : spec.verify === undefined || state.snapshot === null ? 'n/a' : spec.verify(state.snapshot) ? 'yes' : 'no'
 
       state.outcome = {
         label: spec.label,
@@ -123,17 +133,18 @@ export function createRunner(state: State, host: Host, deps: RunnerDeps): Runner
       return
     }
 
-    // A kind of action the person said never to ask about again runs now, its label saying so.
+    // A kind of action the person said never to ask about again runs now, its label saying so. That answer is the person's: an action
+    // Claude asked for (ADR-444) still goes through the pending path, where the control level and the confirm mode decide.
     const kind = rememberKey(spec)
 
-    if (kind !== null && state.allowed.has(kind)) {
+    if (kind !== null && state.allowed.has(kind) && !state.control.viaModel) {
       inflight = execute({ ...spec, label: `${spec.label} (remembered: not asked)` })
 
       return
     }
 
     pendingSpec = spec
-    state.pending = { ...(kind !== null && { rememberKey: kind }), ...(spec.scope !== undefined && { scope: spec.scope }), label: spec.label, args: spec.args, expect: spec.expect, askedAtMs: Date.now(), ...(spec.shows !== undefined && { shows: spec.shows }), ...(spec.note !== undefined && { note: spec.note }) }
+    state.pending = { view: state.view, ...(kind !== null && { rememberKey: kind }), ...(spec.scope !== undefined && { scope: spec.scope }), label: spec.label, args: spec.args, expect: spec.expect, askedAtMs: Date.now(), source: state.control.viaModel ? 'claude' : 'you', ...(spec.shows !== undefined && { shows: spec.shows }), ...(spec.note !== undefined && { note: spec.note }), ...(spec.declared !== undefined && { declared: spec.declared }) }
     host.invalidate()
   }
 
@@ -141,11 +152,17 @@ export function createRunner(state: State, host: Host, deps: RunnerDeps): Runner
     const spec = pendingSpec
     const isFresh = state.pending !== null && Date.now() - state.pending.askedAtMs < PENDING_TTL_MS
 
+    const waitedMs = state.pending === null ? 0 : Date.now() - state.pending.askedAtMs
+
     pendingSpec = null
     state.pending = null
 
     if (spec === null || !isFresh || state.isActing) {
-      if (spec !== null && !isFresh) say(spec.label, false, 'the confirm came more than 30 s after the ask; ask again')
+      if (spec !== null && !isFresh) {
+        say(spec.label, false, 'the confirm came more than 30 s after the ask; ask again')
+        // `say` is one slot that the next action overwrites; the event stays in the feed (ADR-448 §3.2).
+        record(state.events, [{ atMs: Date.now(), kind: 'tools', text: `confirm for "${plain(spec.label, 60)}" came ${Math.round(waitedMs / 1000)}s after the ask and was not run (${PENDING_TTL_MS / 1000}s window)` }])
+      }
 
       host.invalidate()
 
@@ -186,9 +203,9 @@ export function createRunner(state: State, host: Host, deps: RunnerDeps): Runner
   }
 
   /** A palette entry by its id (`/ruflo run <id> [text]`, an approval's button): false when there is none now. */
-  function runById(id: string, text: string): boolean {
+  function runById(id: string, text: string, options: { exact?: boolean } = {}): boolean {
     const entries = paletteEntries(state, Date.now())
-    const entry = entries.find(candidate => candidate.id === id) ?? (text === '' ? undefined : filterPalette(entries, `${id} ${text}`, 'all')[0])
+    const entry = entries.find(candidate => candidate.id === id) ?? (text === '' || options.exact === true ? undefined : filterPalette(entries, `${id} ${text}`, 'all')[0])
 
     if (entry === undefined) return false
 
@@ -197,5 +214,5 @@ export function createRunner(state: State, host: Host, deps: RunnerDeps): Runner
     return true
   }
 
-  return { ask, confirm, cancel, runEntry, runById, settled: () => inflight }
+  return { ask, confirm, cancel, runEntry, runById, settled: () => inflight, finished: () => background }
 }

@@ -388,13 +388,14 @@ const handlers = {
     if (router && router.routeTask) {
       const result = router.routeTask(prompt);
       // Format output for Claude Code hook consumption — real data only
+      const row = (text) => `| ${text.substring(0, 60).padEnd(60)} |`;
       const output = [
         `[INFO] Routing task: ${prompt.substring(0, 80) || '(no prompt)'}`,
         '',
         '+------------------- Primary Recommendation -------------------+',
-        `| Agent: ${result.agent.padEnd(53)}|`,
-        `| Confidence: ${(result.confidence * 100).toFixed(1)}%${' '.repeat(44)}|`,
-        `| Reason: ${(result.reason || '').substring(0, 53).padEnd(53)}|`,
+        row(`Agent: ${result.agent}`),
+        row(`Confidence: ${(result.confidence * 100).toFixed(1)}%`),
+        row(`Reason: ${result.reason || ''}`),
         '+--------------------------------------------------------------+',
       ];
       console.log(output.join('\n'));
@@ -462,8 +463,77 @@ const handlers = {
     // (silently exiting 0 and letting the dangerous command through).
     const cmd = String(hookInput.command || toolInput.command || prompt || '').toLowerCase();
     const dangerous = ['rm -rf /', 'format c:', 'del /s /q c:\\', ':(){:|:&};:'];
+    // Join literal quote fragments and normalize root paths without shell evaluation.
+    function hasRootDelete(command, depth = 0) {
+      let word = '', quote = '', started = false, redirect = false
+      let inRm = false, optionsEnded = false, recursive = false, force = false, root = false
+      const isRoot = (operand) => {
+        if (!operand.startsWith('/')) return false
+        const parts = []
+        for (const part of operand.split('/')) {
+          if (!part || part === '.') continue
+          if (part === '..') parts.pop()
+          else parts.push(part)
+        }
+        return parts.length === 0 || /[*?\[]/.test(parts[0])
+      }
+      const finishWord = () => {
+        if (!started) return false
+        // Literal shell strings (e.g. sh -c 'rm -rf /') also carried the old guard.
+        // Bound rescanning to four levels; beyond that retain its conservative check.
+        if (word.includes('rm') && /[\s;&|()]/.test(word)) {
+          if (depth < 4 ? hasRootDelete(word, depth + 1) : word.includes('rm -rf /')) return true
+        }
+        if (!inRm) inRm = word === 'rm' || word.endsWith('/rm')
+        else if (!optionsEnded && word === '--') optionsEnded = true
+        else if (!optionsEnded && word.startsWith('-')) {
+          recursive = recursive || word === '--recursive' || /^-[a-z]*r[a-z]*$/.test(word)
+          force = force || word === '--force' || /^-[a-z]*f[a-z]*$/.test(word)
+        } else root = root || isRoot(word)
+        word = ''; started = false
+        return inRm && recursive && force && root
+      }
+      const finishCommand = () => {
+        const denied = inRm && recursive && force && root
+        inRm = optionsEnded = recursive = force = root = false
+        return denied
+      }
+      for (let i = 0; i < command.length; i++) {
+        const char = command[i]
+        const redirectionAmpersand = char === '&' && (redirect || command[i + 1] === '>')
+        redirect = false
+        if (quote) {
+          if (char === quote) quote = ''
+          else if (quote === '"' && char === '\\' && i + 1 < command.length &&
+            (command[i + 1] === '"' || command[i + 1] === '\\' || command[i + 1] === '$' ||
+              command.charCodeAt(i + 1) === 96 || command[i + 1] === '\n')) {
+            const next = command[++i]
+            if (next !== '\n') word += next
+          } else word += char
+          continue
+        }
+        if (char === '\\' && i + 1 < command.length) {
+          const next = command[++i]
+          if (next !== '\n') { word += next; started = true }
+        } else if (char === '"' || char === "'") {
+          quote = char; started = true
+        } else if (char === '#' && !started) {
+          while (i < command.length && command[i] !== '\n') i++
+          if (finishCommand()) return true
+        } else if (char === ' ' || char === '\t' || char === '\r' || char === '\n' ||
+          ';|&()<>'.includes(char)) {
+          if (finishWord()) return true
+          // Redirections separate words, but later operands still belong to rm.
+          redirect = char === '<' || char === '>'
+          if (!redirectionAmpersand && (char === '\n' || ';|&()'.includes(char)) && finishCommand()) return true
+        } else {
+          word += char; started = true
+        }
+      }
+      return finishWord() || finishCommand()
+    }
     for (const d of dangerous) {
-      if (cmd.includes(d)) {
+      if (d === 'rm -rf /' ? hasRootDelete(cmd) : cmd.includes(d)) {
         console.error(`[BLOCKED] Dangerous command detected: ${d}`);
         // Claude Code PreToolUse: exit 2 blocks execution; exit 1 is non-blocking.
         process.exit(2);

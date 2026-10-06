@@ -2,7 +2,10 @@ import type { RenderElement } from 'claude-code'
 
 import { catalogOf, installedOf, listOf, MODES, PAGE, type Verb } from '../plugin-catalog'
 import type { CatalogPlugin } from '../data/plugin-catalog'
-import { button, clip, col, kv, row, rule, section, text, THEME, type Ctx } from './common'
+import { RUFLO_MARKET } from '../data/snapshot'
+import { ago, button, clip, col, kv, row, rule, section, text, THEME, type Ctx } from './common'
+import { frameResult } from './status-card'
+import { homeLink } from './links'
 
 /** The ▸ verb a row ends with: install when absent, else enable or disable. */
 function verbOf(ctx: Ctx, plugin: CatalogPlugin): { verb: Verb; label: string } {
@@ -61,6 +64,13 @@ function detailRows(ctx: Ctx, plugin: CatalogPlugin): RenderElement[] {
 
   rows.push(row(ctx, verbs.map(verb => button(ctx, `cat-do-${verb}-${plugin.name}`, verb, () => ctx.act.catalog.change(verb, plugin.name))), `cat-verbs-${plugin.name}`))
 
+  // How this plugin relates to the rest of the console: the section that launches its commands, and the setup's health.
+  const home = homeLink(plugin.name)
+
+  rows.push(
+    row(ctx, [text(ctx, ' related ', { dimColor: true }), ...(home === null ? [] : [button(ctx, `cat-home-${plugin.name}`, `→ ${home.label}: its commands (Launch)`, () => ctx.act.view(home.view))]), button(ctx, `cat-health-${plugin.name}`, '→ Plugins: setup health', () => ctx.act.view('plugins'))], `cat-related-${plugin.name}`),
+  )
+
   if (plugin.isMod) rows.push(text(ctx, ' MOD: function hooks run in the engine once this plugin is loaded (trust it like code you run)', { color: THEME.warn }))
   if (plugin.hasMcp) rows.push(text(ctx, ' MCP: ships an .mcp.json: its servers start with the plugin', { dimColor: true }))
 
@@ -83,7 +93,7 @@ function lastRows(ctx: Ctx): RenderElement[] {
 
   if (last === null) return []
 
-  return [rule(ctx, 'Result', last.ok ? '✓' : '✗'), text(ctx, ` ${last.label}`, { bold: true, color: last.ok ? THEME.ok : THEME.bad }), ...last.lines.slice(0, 40).map(line => text(ctx, `   ${line}`))]
+  return [frameResult(ctx, [rule(ctx, 'Result', last.ok ? '✓' : '✗'), text(ctx, ` ${last.label}`, { bold: true, color: last.ok ? THEME.ok : THEME.bad }), ...last.lines.slice(0, 40).map(line => text(ctx, `   ${line}`))], last.ok ? 'ok' : 'bad')]
 }
 
 /**
@@ -110,6 +120,21 @@ export function catalogView(ctx: Ctx): RenderElement {
 
   rows.push(rule(ctx, 'Plugin Catalog', `${all.length} plugins · ${installed.size} installed · ${enabled.size} enabled`))
   rows.push(text(ctx, ` ${total(plugin => plugin.skills.length)} skills · ${total(plugin => plugin.agents.length)} agents · ${total(plugin => plugin.commands.length)} commands · ${all.filter(plugin => plugin.hasMcp).length} MCP · ${all.filter(plugin => plugin.isMod).length} mods · ■ enabled □ installed · not installed`, { dimColor: true }))
+  // The marketplace these come from: how fresh the clone is, with the way back to the Plugins page (the setup's health) and the update.
+  const market = state.snapshot?.plugins.markets?.find(entry => entry.name === RUFLO_MARKET)
+  const isStale = (state.snapshot?.plugins.missingFromClone.length ?? 0) > 0
+
+  rows.push(
+    row(
+      ctx,
+      [
+        text(ctx, market === undefined ? ' marketplace not added ' : ` clone pulled ${ago(market.updatedMs, ctx.nowMs)}${isStale ? ' · STALE' : ''} `, { color: market === undefined || isStale ? THEME.warn : THEME.ok }),
+        button(ctx, 'cat-health', '◂ Plugins: health', () => ctx.act.view('plugins')),
+        button(ctx, 'cat-refresh', '↻ update marketplace', () => ctx.act.plugin('refresh'), isStale ? { primary: true } : {}),
+      ],
+      'cat-health-row',
+    ),
+  )
   rows.push(
     row(
       ctx,

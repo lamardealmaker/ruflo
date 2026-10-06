@@ -17,6 +17,7 @@ import { settingsPalette } from './settings-palette'
 import { devPalette } from './devtools'
 import { LAB, labSpec, labWhy } from './mh-lab'
 import { PERF } from './perf'
+import { anatolePalette } from './anatole'
 import { SECURE, SECURE_KEYWORDS, SECURE_TEXT, secSpec, secTextSpec } from './secure'
 import { skillPaletteEntries } from './skills-lab'
 import { automateEntries } from './automate'
@@ -102,7 +103,7 @@ export function paletteEntries(state: State, nowMs: number): PaletteEntry[] {
   for (const type of AGENT_TYPES) add(`spawn-${type}`, 'swarm', `spawn ${/^[aeiou]/.test(type) ? 'an' : 'a'} ${type} agent`, { kind: 'spec', spec: spawnAgent(type, nowMs), why: 'unknown agent type' })
 
   // One-click starts, also reachable as `/ruflo run <id>`: everything an empty section offers.
-  for (const id of START_IDS) add(id, 'start', `${START_LABEL[id]}`, { kind: 'spec', spec: startSpec(id, nowMs), why: 'that start cannot run here' })
+  for (const id of START_IDS) add(id, 'start', `${START_LABEL[id]}`, { kind: 'spec', spec: startSpec(id, nowMs, '', present => { state.nostrKeyVerifiedAtMs = present ? Date.now() : null }), why: 'that start cannot run here' })
   add('task', 'start', 'task <text>: put a task on the board', { kind: 'text', keyword: 'task', make: text => startSpec('task', nowMs, text) })
   add('mission', 'start', 'mission <objective>: create an ADR-406 mission', { kind: 'text', keyword: 'mission', make: text => startSpec('mission', nowMs, text) })
 
@@ -176,6 +177,7 @@ export function paletteEntries(state: State, nowMs: number): PaletteEntry[] {
   // Dev Tools: local reads run at once, the rest ask first; an entry with a field takes its text (see devtools.ts).
   out.push(...devPalette(state))
   out.push(...catalogPalette(state))
+  out.push(...anatolePalette(state))
   out.push(...missionPalette(state))
   out.push(...askPalette(state))
   out.push(...settingsPalette(state))
@@ -211,9 +213,13 @@ export function filterPalette(entries: readonly PaletteEntry[], query: string, c
 
       return score === null ? [] : [{ entry, score }]
     })
-    .sort((a, b) => b.score - a.score)
+    // What can run comes first, so the best match, which Enter runs, is something that runs; each half keeps its own order.
+    .sort((a, b) => Number(isUnavailable(a.entry)) - Number(isUnavailable(b.entry)) || b.score - a.score)
     .map(match => match.entry)
 }
+
+/** An entry that cannot run now (its spec is null: a mod that is not seated, a missing selection). */
+export const isUnavailable = (entry: PaletteEntry): boolean => entry.run.kind === 'spec' && entry.run.spec === null
 
 /** The argument a text entry takes from the query: everything after its keyword. */
 export const textOfQuery = (query: string, keyword: string): string => query.trim().slice(keyword.length).trim()

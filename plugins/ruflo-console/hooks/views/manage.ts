@@ -16,7 +16,7 @@ const chip = (ctx: Ctx, key: string, label: string, isOn: boolean, onPress: () =
   ctx.kit.Button({ key, label: ` ${isOn ? '●' : '○'} ${label} `, plain: true, ...(isOn && { variant: 'primary' as const }), onPress })
 
 /** Busy time as a share of the time this lane was observed in the window, and its tool calls. */
-function statsOf(lane: Lane, fromMs: number, nowMs: number): { observedMs: number; busyMs: number; calls: number } {
+export function statsOf(lane: Lane, fromMs: number, nowMs: number): { observedMs: number; busyMs: number; calls: number } {
   const spans = lane.spans.filter(span => span.toMs > fromMs)
   const first = spans.length === 0 ? nowMs : Math.max(fromMs, Math.min(...spans.map(span => span.fromMs)))
 

@@ -22,11 +22,15 @@ export const MODS_CONFIG = JSON.stringify({
   pluginId: 'ruflo-mods@ruflo',
   schema: {
     costBudgetUsd: { type: 'number', title: 'Session budget (USD)', description: 'Apply the budget ladder. 0 turns it off.', default: 0 },
+    toolHints: { type: 'boolean', title: 'Usage hints on ruflo tools', description: 'schema text that is replaced on screen', default: false },
+    agentTrim: { type: 'boolean', title: 'Hide unused agent types', description: 'schema text that is replaced on screen', default: false },
+    agentTrimKeep: { type: 'string', title: 'Agent types to never hide', description: 'Comma-separated names.', default: '' },
+    deliveryScreen: { type: 'boolean', title: 'Screen peer deliveries and outgoing messages', description: 'schema text that is replaced on screen', default: false },
     modTrustAllow: { type: 'string', title: 'Trusted mods', description: 'Plugin ids to trust.', default: '' },
     relayApiToken: { type: 'string', title: 'Relay token', description: 'A bearer token.', sensitive: true },
   },
-  inputs: { costBudgetUsd: '', modTrustAllow: '', relayApiToken: 'sk-must-never-show' },
-  choices: {},
+  inputs: { costBudgetUsd: '', toolHints: 'false', agentTrim: 'false', agentTrimKeep: '', deliveryScreen: 'false', modTrustAllow: '', relayApiToken: 'sk-must-never-show' },
+  choices: { toolHints: ['true', 'false'], agentTrim: ['true', 'false'], deliveryScreen: ['true', 'false'] },
   configured: ['relayApiToken'],
   unconfigured: ['costBudgetUsd', 'modTrustAllow'],
 })

@@ -7,7 +7,8 @@ import type { LabCost } from '../mh-lab'
 import { neuralEntries } from '../neural'
 import { slot } from './attention'
 import { loopRows } from './loops'
-import { ago, button, clip, col, row, rule, text, THEME, type Ctx } from './common'
+import { ago, button, clip, col, type Ctx, row, rule, tagChip, text, THEME } from './common'
+import { frameResult } from './status-card'
 import { selection } from './select'
 
 /** Result lines in view at once; j/k scroll the rest. */
@@ -27,7 +28,7 @@ export type Item = { id: string; label: string; cost: LabCost }
 export function strip(ctx: Ctx, key: string, items: readonly Item[]): RenderElement {
   return row(
     ctx,
-    items.flatMap(item => [ctx.kit.Text({ bold: true, color: TAG[item.cost].color(), children: ` ${TAG[item.cost].text}` }), ctx.kit.Button({ key: `run-${item.id}`, label: `▸ ${item.label}`, plain: true, onPress: () => void ctx.act.run(item.id) })]),
+    items.flatMap(item => [tagChip(ctx, TAG[item.cost].text, TAG[item.cost].color()), ctx.kit.Button({ key: `run-${item.id}`, label: `▸ ${item.label}`, plain: true, onPress: () => void ctx.act.run(item.id) })]),
     key,
   )
 }
@@ -60,7 +61,7 @@ export function resultRows(ctx: Ctx, prefixes: readonly string[]): RenderElement
   if (result === null) {
     if (running === null) rows.push(text(ctx, ' ▸ press any entry: a $0 read shows here at once; wr, cpu and $$ ask first (y), then show here', { dimColor: true }))
 
-    return rows
+    return [frameResult(ctx, rows, running !== null ? 'run' : 'idle')]
   }
 
   rows.push(text(ctx, ` ${result.label}`, { bold: true, color: result.ok ? THEME.ok : THEME.bad }))
@@ -73,7 +74,7 @@ export function resultRows(ctx: Ctx, prefixes: readonly string[]): RenderElement
     rows.push(row(ctx, [text(ctx, ` lines ${top + 1}-${Math.min(result.lines.length, top + RESULT_ROWS)} of ${result.lines.length} `, { dimColor: true }), button(ctx, 'res-up', 'up', () => ctx.act.select(-1), { hotkey: 'k' }), button(ctx, 'res-down', 'down', () => ctx.act.select(1), { hotkey: 'j' })]))
   }
 
-  return slot(ctx, rows)
+  return slot(ctx, [frameResult(ctx, rows, result.ok ? 'ok' : 'bad')])
 }
 
 /** One worker's light: running now (◌), failing (◐), has run (●), or never run here (○). */

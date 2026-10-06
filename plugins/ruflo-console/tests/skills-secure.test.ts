@@ -6,7 +6,7 @@ import { MEM_OUT } from './fixtures/memory'
 import { MISSION_OBSERVATION } from './fixtures/missions'
 import { HIVE_TOKEN, RUFLO_FILES } from './fixtures/ruflo-run'
 import { FIND_OUT, LIST_OUT, LS_GLOBAL, USE_OUT } from './fixtures/skills'
-import { cliAnswer, command, elementsOf, fakeRuflo, keyOf, paneAt, PLUGIN, SESSION, textOf, worldOf } from './fixtures/world'
+import { inputKeys, cliAnswer, command, elementsOf, fakeRuflo, keyOf, paneAt, PLUGIN, SESSION, textOf, worldOf } from './fixtures/world'
 
 const HOME_FILES = {
   '.claude/plugins/installed_plugins.json': JSON.stringify({
@@ -31,7 +31,7 @@ describe('skills, security and performance', () => {
     mock.clock(on)
     await $.session.start(SESSION)
 
-    const { text, tree } = await drawn($, 'skills')
+    const { text, tree } = await drawn($, 'skills', 120)
 
     expect(text).toContain('INSTALLED')
     expect(text).toContain('SEARCH')
@@ -39,7 +39,7 @@ describe('skills, security and performance', () => {
     expect(text).toContain('0 project · 2 global')
     expect(text).toMatch(/ faceless-explainer \.+/)
     expect(text).toContain('Claude Code, Codex')
-    expect(elementsOf(tree, 'Input').map(keyOf)).toEqual(['skills-search', 'skills-create'])
+    expect(inputKeys(tree)).toEqual(['skills-search', 'skills-create'])
     expect(elementsOf(tree, 'Button').map(keyOf)).toEqual(expect.arrayContaining(['sk-update-0', 'sk-remove-0', 'sk-edit-0']))
     // The tab has no hotkey, and the current one reads without a key.
     expect(text).toContain('[z: 🧰 SKILLS]')
@@ -77,12 +77,12 @@ describe('skills, security and performance', () => {
     mock.clock(on)
     await $.session.start(SESSION)
 
-    const { text, tree } = await drawn($, 'secure')
+    const { text, tree } = await drawn($, 'secure', 110, ['sec-scan', 'sec-doctor'])
 
     for (const section of ['FINDINGS', 'CHECK TEXT', 'SCAN & INSPECT', 'DOCTOR', 'RESULT']) expect(text).toContain(section)
     expect(text).toContain('nothing run yet')
-    expect(text).toMatch(/n\/a {2}VALIDATE/)
-    expect(elementsOf(tree, 'Input').map(keyOf)).toEqual(['sec-text'])
+    expect(text).toMatch(/n\/a\s+VALIDATE/)
+    expect(inputKeys(tree)).toEqual(['sec-text'])
     expect(elementsOf(tree, 'Button').map(keyOf)).toEqual(expect.arrayContaining(['run-sec-scan-quick', 'run-sec-threats', 'run-doc-all', 'run-doc-fix', 'run-doc-node', 'run-aid-pii', 'run-policy-status']))
     expect(ours()).toEqual([])
 
@@ -132,6 +132,7 @@ describe('skills, security and performance', () => {
     await pane.press({ key: 'run-perf-metrics' })
     expect(textOf(await pane.drawn())).toMatch(/event loop\s+\n?▁█/)
 
+    await pane.press({ key: 'sec-perf-record' })
     await pane.press({ key: 'run-perf-report' })
     expect(textOf(await pane.drawn())).toContain('runs: ruflo mcp exec -t performance_report -p {"format":"detailed"}')
     expect(world.runs.some(argv => argv.includes('performance_report'))).toBe(false)

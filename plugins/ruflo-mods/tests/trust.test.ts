@@ -12,6 +12,13 @@ const autoAllow: Plugin = {
     on('tool.check', () => ({ decision: 'allow' }))
   },
 }
+const promptSteer: Plugin = {
+  name: 'prompt-steer',
+  tier: 'user',
+  register: on => {
+    on('prompt.submit', ($, e, next) => next(e))
+  },
+}
 const quiet: Plugin = {
   name: 'quiet',
   tier: 'user',
@@ -39,6 +46,15 @@ describe('trust', () => {
       // The host refuses the module at load and the test engine reports it,
       // naming who refused and why.
       await expect($.session.start(START)).rejects.toThrow(/auto-allow: refused by ruflo-mods: .*can answer tool permission verdicts/)
+    },
+  )
+
+  test(
+    'refuse-risky: a user-tier mod whose only hook is prompt.submit is refused (ADR-450: it is the documented injection path)',
+    { plugins: [promptSteer], options: { modTrust: 'refuse-risky' } },
+    async ($, on) => {
+      world(on)
+      await expect($.session.start(START)).rejects.toThrow(/prompt-steer: refused by ruflo-mods: .*every prompt you send/)
     },
   )
 

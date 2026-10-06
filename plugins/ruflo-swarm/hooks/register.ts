@@ -322,6 +322,10 @@ export function register(on: On, raw: PluginOptions) {
           return { text: 'Swarm pane hidden' }
         }
 
+        if (state.options.panel === 'off') {
+          return { text: 'The swarm pane is off (panel option); set panel to command or auto in /config to open it' }
+        }
+
         const opened = await openPane()
 
         return { text: opened.isPlaced ? 'Swarm pane shown' : `The swarm pane could not be shown: ${opened.reason}` }

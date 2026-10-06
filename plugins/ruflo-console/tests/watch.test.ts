@@ -6,7 +6,7 @@ import type { TestBody } from 'claude-code/testing'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { RUFLO_FILES } from './fixtures/ruflo-run'
-import { command, elementsOf, keyOf, paneAt, PLUGIN, SESSION, textOf, worldOf } from './fixtures/world'
+import { inputKeys, command, elementsOf, keyOf, paneAt, PLUGIN, SESSION, textOf, worldOf } from './fixtures/world'
 
 type Body = Parameters<TestBody>
 
@@ -44,7 +44,7 @@ describe('timeline and events pages', () => {
     const first = await pane.drawn()
 
     expect(keys(first)).toEqual(expect.arrayContaining(['ev-kind-all', 'ev-pause']))
-    expect(elementsOf(first, 'Input').map(keyOf)).toContain('ev-query')
+    expect(inputKeys(first)).toContain('ev-query')
     expect(textOf(first)).toContain('live')
     await pane.press({ key: 'ev-pause' })
     expect(textOf(await pane.drawn())).toContain('paused')

@@ -5,6 +5,7 @@
  */
 import { idOf, type AgentRecord, type ClaimRecord, type Claimant, type TaskRecord } from './data/parse'
 import type { Snapshot } from './data/snapshot'
+import type { Host } from './host'
 
 export type ActionSpec = {
   label: string
@@ -14,6 +15,8 @@ export type ActionSpec = {
   stdin?: string
   expect: string
   verify?: (snapshot: Snapshot) => boolean
+  /** A local check after a confirmed action succeeds; never part of background refreshes. */
+  verifyLocal?: (host: Pick<Host, 'fs' | 'home'>) => Promise<boolean>
   /** Reads only: runs at once, without the confirm step, and shows what the CLI printed. */
   isReadOnly?: boolean
   /** Not a ruflo CLI call: what runs instead once confirmed (a terminal harness), reporting for itself. */
@@ -22,6 +25,8 @@ export type ActionSpec = {
   scope?: string
   /** The command line the confirm row shows when it is not `ruflo <args>`. */
   shows?: string
+  /** The class the entry itself declares (a Dev Tools entry's `cost`): Claude's confirm gate never reads it as less than this. */
+  declared?: 'write' | 'network' | 'install' | 'spend' | 'delete'
   /** A MetaHarness lab entry's id: the runner keeps what it printed for the lab's result panel. */
   lab?: string
   /** What a run costs or writes, in words: the confirm row and the result panel show it. */

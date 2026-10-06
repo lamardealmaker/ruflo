@@ -7,6 +7,7 @@
  */
 import type { ActionSpec } from './actions'
 import { autoSpec, tool, type AutoEntry } from './automate'
+import { recallEntries } from './recall'
 import { EPOCHS, freeText, objectIn, parseTrain, PATTERNS, tableRows, type Pattern } from './data/automate'
 import { numberOf, plain, recordOf } from './data/parse'
 import { labLines } from './mh-lab'
@@ -122,6 +123,7 @@ export function neuralEntries(state: State): AutoEntry[] {
   out.push({ id: 'nn-route', group: 'neural', label: 'nn-route <task>: which agent for this task?', make: routeSpec })
   out.push({ id: 'nn-explain', group: 'neural', label: 'nn-explain <task>: why the router picks that agent', make: explainSpec })
   out.push({ id: 'nn-predict', group: 'neural', label: 'nn-predict <text>: the trained models’ top predictions', make: predictSpec })
+  out.push(...recallEntries(state))
 
   return out
 }

@@ -3,7 +3,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import { RUFLO_FILES } from './fixtures/ruflo-run'
 import { BAND, command, elementsOf, fakeRuflo, keyOf, paneAt, PLUGIN, SESSION, textOf, worldOf } from './fixtures/world'
 
-const VIEWS = ['overview', 'swarm', 'claims', 'federation', 'plugins', 'learning', 'metaharness', 'memory', 'cost', 'timeline', 'approvals', 'events', 'agent'] as const
+const VIEWS = ['overview', 'swarm', 'claims', 'federation', 'plugins', 'learning', 'metaharness', 'memory', 'cost', 'timeline', 'approvals', 'events', 'room', 'agent'] as const
 
 describe('behaviour', () => {
   test('with the default bbs look, a freshly opened pane plays the boot screen first, and draws nothing else under it', async ($, on) => {
@@ -227,7 +227,7 @@ describe('behaviour', () => {
 
     const swarm = textOf(await $.ui.render(paneAt(110)))
 
-    expect(swarm).toContain('c1 EVIL')  // the whole colour sequence is gone, not just its ESC byte
+    expect(swarm).toContain('c1EVIL')  // the whole colour sequence, the bidi override and the NUL are removed outright (not spaced), so no credential can hide behind an invisible split
     expect(swarm).not.toContain('[31m')
     expect(swarm).not.toMatch(/[\u0000-\u001f‪-‮](?<!\n)/)
     await $.command.run(command('claims'))
@@ -246,7 +246,8 @@ describe('behaviour', () => {
     const band = textOf(await $.ui.render(BAND)).replace(/\n/g, '')
 
     // Urgent first, then what is happening now (a fresh event), then the standing context.
-    expect(band).toContain('ruflo · 3 to approve (q) · ⚠ 1 alert · router picked tester (60%) · 0s ago · 2 claims')
+    expect(band).toContain('ruflo · 3 to approve (q) · ⚠ 1 alert · router picked tester (60%) · 0s ago')
+    expect(band).toContain('2 claims (1 stealable)')
     expect(band).not.toMatch(/0\/\d+ busy|\d patterns/)
     expect(band).toContain('open console')
     expect(textOf(await $.ui.render({ ...BAND, props: { ...BAND.props, hasSurvey: true } }))).toBe('engine')

@@ -26,4 +26,14 @@ describe('cost', () => {
     expect((await spawn()).deny).toMatch(/halted \(costHardStop\)/)
     expect(JSON.parse((await $.command.run(run('consumer-snapshot'))).text ?? 'null').budget).toEqual({ level: 'HARD_STOP', usd: 2.4, limit: 2 })
   })
+
+  test('a rung announced once stays quiet when cost falls and rises again', { options: { costBudgetUsd: 2 } }, async ($, on) => {
+    world(on)
+    const toasts: string[] = []
+    on('ui.toast', ($, e) => (toasts.push(e.text), { value: undefined }))
+    on('session.measure', ($, e) => ({ changed: e.changed }))
+    await $.session.start(START)
+    for (const usd of [1.1, 0.2, 1.2, 1.6, 1.0, 1.7, 1.9]) await $.session.measure(measure(usd))
+    expect(toasts.map(t => t.split(':')[0])).toEqual(['ruflo budget INFO', 'ruflo budget WARNING', 'ruflo budget CRITICAL'])
+  })
 })

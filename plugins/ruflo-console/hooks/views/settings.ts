@@ -1,8 +1,9 @@
 import type { RenderElement } from 'claude-code'
 
 import { catalogOf } from '../plugin-catalog'
-import { AI_BUDGETS, CLAUDE_MODELS, CORE, DEFAULT_AI, pluginNames, SIMPLE, settingsOf, type CoreKey, type Level, type PluginConfig } from '../settings'
+import { AI_BUDGETS, CLAUDE_MODELS, CORE, DEFAULT_AI, LOOP_ROWS, pluginNames, OPTION_NOTES, SIMPLE, settingsOf, type CoreKey, type Level, type PluginConfig } from '../settings'
 import { NAV_STYLES } from '../state'
+import { UPDATES_MODES, type UpdatesMode } from '../updates'
 import { button, clip, col, row, rule, section, text, THEME, type Ctx } from './common'
 
 /** One setting, whatever it belongs to, so a search, a level and "changed only" filter one list. */
@@ -93,7 +94,7 @@ function pluginItems(ctx: Ctx, config: PluginConfig): Item[] {
         settingRows(ctx, {
           key: id,
           title: entry.title,
-          description: entry.description,
+          description: OPTION_NOTES[config.name]?.[key] ?? entry.description,
           current,
           isChanged,
           isSecret: entry.isSecret,
@@ -158,6 +159,12 @@ function aiItems(ctx: Ctx): Item[] {
     one('model', 'Claude model', 'the model claude -p uses for AI terminal turns (the CLI’s default when unset)', ai.claudeModel, CLAUDE_MODELS, ai.claudeModel !== DEFAULT_AI.claudeModel, value => ctx.act.settings.ai({ claudeModel: value as (typeof CLAUDE_MODELS)[number] }), 'model haiku sonnet opus'),
     one('budget', 'Turn budget (USD)', 'claude -p --max-budget-usd: the most one turn may spend; the sandbox stays read-only', String(ai.budgetUsd), AI_BUDGETS.map(String), ai.budgetUsd !== DEFAULT_AI.budgetUsd, value => ctx.act.settings.ai({ budgetUsd: Number(value) as (typeof AI_BUDGETS)[number] }), 'cost spend cap'),
     one('guidance', 'Mission guidance', 'after a mission goal is entered, claude -p writes detailed guidance by lifecycle stage and suggests ruflo capabilities to bring in (it asks first unless always accept)', ai.guidance ? 'on' : 'off', ['on', 'off'], !ai.guidance, value => ctx.act.settings.ai({ guidance: value === 'on' }), 'mission goal guidance advice suggestions'),
+    ...LOOP_ROWS.map(row => one(row.id, row.title, row.description, row.current(ai), row.options, row.isChanged(ai), value => ctx.act.settings.ai(row.patch(value)), row.extra)),
+    one('model-control', 'Claude control', 'how far Claude may drive this console with its console_* tools: off, read (look and open pages), write (also fill fields and run local actions), manage (also network), full (also spend, deploy, delete); takes effect in a new session or /reload-plugins', ai.modelControl, ['off', 'read', 'write', 'manage', 'full'], ai.modelControl !== 'off', value => ctx.act.settings.ai({ modelControl: value as typeof ai.modelControl }), 'claude control drive computer use tools autonomy model'),
+    one('model-confirm', 'Claude control: confirm', 'auto (the default) lets Claude’s call confirm itself, within the level above, so it runs unattended (every call is logged on Overview), except an action that reaches the network, spends or deletes: that always waits for your Yes; ask leaves each action waiting for your Yes in the console', ai.modelConfirm, ['ask', 'auto'], ai.modelConfirm !== 'auto', value => ctx.act.settings.ai({ modelConfirm: value === 'auto' ? 'auto' : 'ask' }), 'claude control confirm auto ask approve'),
+    one('ctx-mission', 'Mission context in Claude’s prompt', 'the active mission and task ride in Claude’s system prompt, and change only when the task does (a changed prompt makes Claude re-read the chat)', ai.missionContext ? 'on' : 'off', ['on', 'off'], !ai.missionContext, value => ctx.act.settings.ai({ missionContext: value === 'on' }), 'mission context prompt cache claude'),
+    one('loop-gates', 'Mission gates', 'your own commands a mission may run to verify a task, one per line; each asks first and shows its exact argv; no shell characters', ai.loopGates, [], ai.loopGates !== '', value => ctx.act.settings.ai({ loopGates: value.slice(0, 800) }), 'gates verify tests smoke evidence'),
+    one('mission-cap', 'Mission spend cap (USD)', 'auto-run pauses when one mission’s spend reaches this (list-price estimate; empty means no cap)', ai.missionCapUsd, [], ai.missionCapUsd !== '', value => ctx.act.settings.ai({ missionCapUsd: /^\d{1,5}(\.\d{1,2})?$/.test(value.trim()) ? value.trim() : '' }), 'mission cap budget spend cost'),
     one('accept', 'Ask before each AI turn', 'always accept sends claude, codex and swarm turns straight out (read-only, plan mode, under the budget); ruflo commands still ask', ai.autoAccept ? 'always accept' : 'ask each time', ['ask each time', 'always accept'], ai.autoAccept, value => ctx.act.settings.ai({ autoAccept: value === 'always accept' }), 'confirm accept approve'),
   ]
 }
@@ -189,6 +196,39 @@ function uiItems(ctx: Ctx): Item[] {
           fieldHint: '',
           where: 'the console’s main nav',
         }),
+    },
+    {
+      id: 'ui-updates',
+      source: 'UI',
+      title: 'Updates',
+      haystack: `updates update auto-update automatic version new published github check ${ctx.state.updates}`,
+      level: 'simple',
+      changed: ctx.state.updates !== 'ask',
+      rows: () => [
+        ...settingRows(ctx, {
+          key: 'ui-updates',
+          title: 'Updates',
+          description:
+            'when a newer ruflo-console is published to github.com/ruvnet/ruflo: ask (offer it at load), auto (install a new minor or patch version without asking; a new major version still asks), or off (never look). One small request to GitHub a day; the install is Claude Code’s own claude plugin update, and takes effect after a restart',
+          current: ctx.state.updates,
+          isChanged: ctx.state.updates !== 'ask',
+          choices: UPDATES_MODES,
+          defaultText: 'default ask',
+          onChoice: value => ctx.act.updates(value as UpdatesMode),
+          fieldKey: 'st-ui-in-updates',
+          fieldLabel: 'updates',
+          fieldHint: '',
+          where: 'the console’s update check',
+        }),
+        row(
+          ctx,
+          [
+            button(ctx, 'updates-check-now', '↻ check for an update now', () => ctx.act.checkUpdates(), { primary: true }),
+            text(ctx, ` ${ctx.state.updateNote === '' ? 'it asks before installing, whatever the setting' : ctx.state.updateNote}`, { dimColor: true }),
+          ],
+          'updates-check-row',
+        ),
+      ],
     },
   ]
 }

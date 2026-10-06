@@ -4,9 +4,11 @@
  * when the person turns `federationNetwork` on. `plugins list` is never run (it fetches the IPFS registry), nor `verify` (it
  * fetches a manifest from GitHub).
  */
+import { closeOf } from './json-span'
 import { idOf, msOf, numberOf, plain, recordOf, stringOf, valuesOf } from './parse'
+import { researchProbe } from './research'
 
-import { CLI_PREFIXES, type CliChoice, type ViewId } from '../state'
+import { CLI_PREFIXES, type CliChoice, type State, type ViewId } from '../state'
 
 export type { ViewId }
 
@@ -15,6 +17,8 @@ export type Probe<T> = {
   args: readonly string[]
   /** A local executable for a capability check, or an offline-only ruflo read. */
   argv?: readonly string[]
+  /** An argv that depends on what is installed; null while it cannot be built, and the probe then does not run. */
+  argvOf?: (state: State) => readonly string[] | null
   isOffline?: boolean
   /** The views that draw it: a probe runs only while one of them is in front (the overview's run with the bar too). */
   views: readonly ViewId[]
@@ -36,7 +40,11 @@ export function jsonAfter(stdout: string): unknown {
     return null
   }
 
-  const end = Math.max(text.lastIndexOf('}'), text.lastIndexOf(']'))
+  const end = closeOf(text, start)
+
+  if (end < 0) {
+    return null
+  }
 
   try {
     return JSON.parse(text.slice(start, end + 1))
@@ -49,7 +57,10 @@ const objectOf = (stdout: string) => recordOf(jsonAfter(stdout))
 const exec = (tool: string, params: Record<string, unknown>) => ['mcp', 'exec', '-t', tool, '-p', JSON.stringify(params)] as const
 
 /** Offline probes never let the download-enabled CLI choice reach the registry. */
-export const probeArgv = (probe: Pick<Probe<unknown>, 'args' | 'argv' | 'isOffline'>, cli: CliChoice): readonly string[] => probe.argv ?? [...CLI_PREFIXES[probe.isOffline && cli === 'npx' ? 'npx-offline' : cli], ...probe.args]
+export const probeArgv = (probe: Pick<Probe<unknown>, 'args' | 'argv' | 'argvOf' | 'isOffline'>, cli: CliChoice, state?: State): readonly string[] => (state === undefined ? undefined : probe.argvOf?.(state)) ?? probe.argv ?? [...CLI_PREFIXES[probe.isOffline && cli === 'npx' ? 'npx-offline' : cli], ...probe.args]
+
+/** A probe with an install-dependent argv runs only while that argv can be built; every other probe is always ready. */
+export const probeReady = (probe: Pick<Probe<unknown>, 'argvOf'>, state: State): boolean => probe.argvOf === undefined || probe.argvOf(state) !== null
 
 /** Help only: older Claude builds must not get a guessed configuration command. */
 export const budgetConfigProbe: Probe<boolean> = {
@@ -469,11 +480,20 @@ export const registryProbe: Probe<Registry> = {
   },
 }
 
-export const PROBES = [versionProbe, memoryProbe, namespacesProbe, scoreProbe, flywheelProbe, auditProbe, intelligenceProbe, peersProbe, channelsProbe, rosterProbe, registryProbe, budgetConfigProbe, modelStatsProbe] as const
+export const PROBES = [versionProbe, memoryProbe, namespacesProbe, scoreProbe, flywheelProbe, auditProbe, intelligenceProbe, peersProbe, channelsProbe, rosterProbe, registryProbe, budgetConfigProbe, modelStatsProbe, researchProbe] as const
 
 export type ProbeId = (typeof PROBES)[number]['id']
 
 /** What a probe came to: the last good value and when, and the last error, so a failing source is never drawn as live. */
 export type ProbeResult<T = unknown> = { value: T | null; okAtMs: number | null; error: string | null; errorAtMs: number | null; isRunning: boolean }
+
+/** An empty offline npm cache needs one explicit install; probes never download it themselves. An absent optional package answers exit 0 with `{degraded: true, reason}` (ADR-150): say so. */
+export function probeError(argv: readonly string[], result: { exitCode: number; stdout: string; stderr: string }): string {
+  if (result.exitCode === 0) return objectOf(result.stdout)?.degraded === true ? `unavailable: ${plain(objectOf(result.stdout)?.reason, 60) || 'degraded'}` : 'no JSON in the CLI output'
+  if (argv[0] === 'npx' && argv.includes('--offline') && argv.includes('@claude-flow/cli@latest') && /\bENOTCACHED\b/.test(`${result.stderr}\n${result.stdout}`)) {
+    return 'ruflo CLI not cached; run: npx -y @claude-flow/cli@latest --version'
+  }
+  return `exit ${result.exitCode}: ${plain(result.stderr.split('\n').find(line => line.trim() !== '') ?? '', 100) || 'no message'}`
+}
 
 export const emptyResult = (): ProbeResult => ({ value: null, okAtMs: null, error: null, errorAtMs: null, isRunning: false })
